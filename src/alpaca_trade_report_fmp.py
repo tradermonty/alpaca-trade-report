@@ -1458,7 +1458,9 @@ class TradeReport:
             
             if len(quarters) < 8:
                 print(f"警告: 十分な四半期データがありません（{len(quarters)}四半期分）")
-                return None
+                # 8四半期未満でもデータがあれば処理を継続
+                if len(quarters) < 2:
+                    return None  # 最低2四半期は必要
                 
             # EPSサプライズの計算（最新四半期）
             current_quarter = quarters[0]
@@ -1471,7 +1473,8 @@ class TradeReport:
             
             # YoY成長率の計算（最新四半期）
             current_growth = None
-            if (current_quarter['eps'] is not None and 
+            # 4四半期前のデータがある場合のみ計算
+            if (len(quarters) > 4 and current_quarter['eps'] is not None and 
                 quarters[4]['eps'] is not None and 
                 abs(quarters[4]['eps']) > 0.0001):
                 current_growth = ((current_quarter['eps'] - quarters[4]['eps']) / 
@@ -1479,7 +1482,8 @@ class TradeReport:
             
             # 前四半期のYoY成長率
             prev_growth = None
-            if (quarters[1]['eps'] is not None and 
+            # 5四半期前のデータがある場合のみ計算
+            if (len(quarters) > 5 and quarters[1]['eps'] is not None and 
                 quarters[5]['eps'] is not None and 
                 abs(quarters[5]['eps']) > 0.0001):
                 prev_growth = ((quarters[1]['eps'] - quarters[5]['eps']) / 
@@ -1919,15 +1923,19 @@ class TradeReport:
             'pnl': lambda x: (x > 0).mean() * 100  # 勝率を計算
         }).round(2)
         
+        # インデックスをリセットして、セクター名が正しく表示されるようにする
+        sector_stats = sector_stats.reset_index()
+        
         fig_sector = go.Figure()
         
-        # 平均リターンのバー
+        # 平均リターンのバー（縦向き）
         fig_sector.add_trace(go.Bar(
-            x=sector_stats.index,
+            x=sector_stats['sector'],  # セクター名を明示的に指定
             y=sector_stats[('pnl_rate', 'mean')],
             name=self.get_text('average_return'),
             text=sector_stats[('pnl_rate', 'mean')].apply(lambda x: f'{x:.1f}%'),
             textposition='auto',
+            orientation='v',  # 縦向きを明示的に指定
             marker_color=[
                 TradeReport.DARK_THEME['profit_color'] if x > 0 
                 else TradeReport.DARK_THEME['loss_color'] 
@@ -1937,7 +1945,7 @@ class TradeReport:
         
         # 勝率のライン
         fig_sector.add_trace(go.Scatter(
-            x=sector_stats.index,
+            x=sector_stats['sector'],  # セクター名を明示的に指定
             y=sector_stats[('pnl', '<lambda>')],
             name=self.get_text('win_rate'),
             yaxis='y2',
@@ -1977,16 +1985,19 @@ class TradeReport:
         
         # トレード数で上位15業種を選択
         top_industries = industry_stats.nlargest(15, ('pnl_rate', 'count'))
+        # インデックスをリセットして、業種名が正しく表示されるようにする
+        top_industries = top_industries.reset_index()
         
         fig_industry = go.Figure()
         
-        # 平均リターンのバー
+        # 平均リターンのバー（縦向き）
         fig_industry.add_trace(go.Bar(
-            x=top_industries.index,
+            x=top_industries['industry'],  # 業種名を明示的に指定
             y=top_industries[('pnl_rate', 'mean')],
             name=self.get_text('average_return'),
             text=top_industries[('pnl_rate', 'mean')].apply(lambda x: f'{x:.1f}%'),
             textposition='auto',
+            orientation='v',  # 縦向きを明示的に指定
             marker_color=[
                 TradeReport.DARK_THEME['profit_color'] if x > 0 
                 else TradeReport.DARK_THEME['loss_color'] 
@@ -1996,7 +2007,7 @@ class TradeReport:
         
         # 勝率のライン
         fig_industry.add_trace(go.Scatter(
-            x=top_industries.index,
+            x=top_industries['industry'],  # 業種名を明示的に指定
             y=top_industries[('pnl', '<lambda>')],
             name=self.get_text('win_rate'),
             yaxis='y2',
