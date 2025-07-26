@@ -14,7 +14,11 @@ import uptrend_stocks
 import strategy_allocation
 
 from common_constants import ACCOUNT, TIMEZONE
+from logging_config import get_logger
 load_dotenv()
+
+# モジュール用ロガー
+logger = get_logger(__name__)
 
 TZ_NY = TIMEZONE.NY  # Migrated from common_constants
 TZ_UTC = TIMEZONE.UTC  # Migrated from common_constants
@@ -82,10 +86,10 @@ def send_email_via_gmail(subject, message, recipient_email, sender_email, sender
         # Disconnect from the server
         server.quit()
 
-        print("Email sent successfully!")
+        logger.info("Email sent successfully!")
 
     except Exception as e:
-        print(f"Failed to send email. Error: {e}")
+        logger.error("Failed to send email. Error: %s", e)
 
 
 def get_existing_positions():
@@ -94,7 +98,7 @@ def get_existing_positions():
 
 
 def is_closing_time_range(range_minutes=1):
-    if test_mode:
+    if TEST_MODE:
         # close_dt = pd.Timestamp(str(test_datetime.date()) + " " + str(close_time), tz=TZ_NY)
         # close_dt -= timedelta(minutes=2)
         current_dt = pd.Timestamp(test_datetime)
@@ -108,14 +112,14 @@ def is_closing_time_range(range_minutes=1):
         close_time = cal[0].close
         close_dt = pd.Timestamp(str(current_dt.date()) + " " + str(close_time), tz=TZ_NY)
     else:
-        print("market will not open on the date.")
+        logger.info("Market will not open on the date.")
         return False
 
     if close_dt - timedelta(minutes=range_minutes) <= current_dt < close_dt:
-        print("past closing time")
+        logger.debug("Past closing time range")
         return True
     else:
-        print(current_dt, "it's not in closing time range")
+        logger.debug("%s it's not in closing time range", current_dt)
         return False
 
 
@@ -126,7 +130,7 @@ def get_last_minute_of_day():
 
 
 def is_market_open():
-    if test_mode:
+    if TEST_MODE:
         return True
     else:
         clock = api.get_clock()
@@ -137,7 +141,7 @@ def get_latest_price(symbol):
     global test_datetime
     close = 0
 
-    if test_mode:
+    if TEST_MODE:
         # bars = api.get_bars(symbol, TimeFrame(1, TimeFrameUnit.Minute),
         #                     start=test_datetime.date(), end=test_datetime.date()).df
 
@@ -194,7 +198,7 @@ def get_rsi_old(symbol, period=14):
     global test_datetime
     ema = 0
 
-    if test_mode:
+    if TEST_MODE:
         current_dt = pd.Timestamp(test_datetime)
     else:
         current_dt = pd.Timestamp(datetime.now().astimezone(TZ_NY))
@@ -227,9 +231,9 @@ def place_order(symbol, qty, side='buy'):
             type='market',
             time_in_force='day',
         )
-        print(f"{symbol}: {side} order placed for {qty} shares.")
+        logger.info("%s: %s order placed for %s shares.", symbol, side, qty)
     except Exception as e:
-        print(f"Error placing order for {symbol}: {e}")
+        logger.error("Error placing order for %s: %s", symbol, e)
 
 
 def rebalance_portfolio():
@@ -263,7 +267,7 @@ def rebalance_portfolio():
             # このシンボルに対してターゲット配分に達するための投資金額を計算
             invest_amount = (target_symbol_value - current_symbol_value) / 2  # 下落からの反発時に2回に分けて買い増し
 
-            print(f"{symbol}: target value: {target_symbol_value:.2f}, current value: {current_symbol_value:.2f}, invenst_amount: {invest_amount:.2f}")
+            logger.debug("%s: target value: %.2f, current value: %.2f, invest_amount: %.2f", symbol, target_symbol_value, current_symbol_value, invest_amount)
             message += f"{symbol}: target value: {target_symbol_value:.2f}, current value: {current_symbol_value:.2f}, invenst_amount: {invest_amount:.2f}\n"
 
             # 投資金額が正の値の場合のみ（つまり、目標配分に達していない場合）
@@ -276,11 +280,11 @@ def rebalance_portfolio():
 
                     # 相場全体でロングシグナルが出て、かつRSIが50以下の場合のみ買い増し
                     if long_signal == "Entry" and uptrend_ratio < UPTREND_THRESH and rsi_today <= 50:
-                        print(f"{symbol}: uptrend and RSI criteria meet. placing buy order: {price:.2f} x {qty:.2f}, {price * qty:.2f} (RSI: {rsi_today:.2f})")
+                        logger.info("%s: uptrend and RSI criteria meet. placing buy order: %.2f x %.2f, %.2f (RSI: %.2f)", symbol, price, qty, price*qty, rsi_today)
                         message += f"{symbol}: uptrend and RSI criteria meet. placing buy order: {price:.2f} x {qty:.2f},  {price * qty:.2f} (RSI: {rsi_today:.2f})\n"
                         place_order(symbol, qty)
                     else:
-                        print(f"{symbol}: uptrend or RSI criteria does not meet. (RSI: {rsi_today:.2f})")
+                        logger.debug("%s: uptrend or RSI criteria does not meet. (RSI: %.2f)", symbol, rsi_today)
                         message += f"{symbol}: uptrend or RSI criteria does not meet. (RSI: {rsi_today:.2f})\n"
 
                         rsi_yesterday = rsi_series.iloc[-2]  # 昨日のRSI
@@ -293,11 +297,11 @@ def rebalance_portfolio():
                         # RSIの14SMAの傾きが下落から上昇に転換し、かつ直近14日間のRSIの最小値が30以下の場合に買い増し
                         if rsi_today >= 40 and rsi_yesterday < 40 and rsi_min <= 35:
                         # if rsi_sma_slope_2dago < 0 and rsi_sma_slope_yesterday > 0 and rsi_sma_slope_today > 0 and rsi_min <= 30:
-                            print(f"{symbol}: placing buy order {price:.2f} x {qty} --- rsi: {rsi_today:.2f}, {rsi_yesterday:.2f}, {rsi_min:.2f}")
+                            logger.info("%s: placing buy order %.2f x %s --- rsi: %.2f, %.2f, %.2f", symbol, price, qty, rsi_today, rsi_yesterday, rsi_min)
                             message += f"{symbol}: placing buy order {price:.2f} x {qty} --- rsi: {rsi_today:.2f}, {rsi_yesterday:.2f}, {rsi_min:.2f}\n"
                             place_order(symbol, qty)
                         else:
-                            print(f"{symbol}: RSI criteria do not meet. --- rsi: {rsi_today:.2f}, {rsi_yesterday:.2f}, {rsi_min:.2f}")
+                            logger.debug("%s: RSI criteria do not meet. --- rsi: %.2f, %.2f, %.2f", symbol, rsi_today, rsi_yesterday, rsi_min)
                             message += f"{symbol}: RSI criteria do not meet. --- rsi: {rsi_today:.2f}, {rsi_yesterday:.2f}, {rsi_min:.2f}\n"
 
             message += "\n"
@@ -312,7 +316,7 @@ def rebalance_portfolio():
                      GMAIL_PASSWORD)
             
         except Exception as error:
-            print("sending email failed.", error)
+            logger.error("Sending email failed: %s", error)
 
 
 def run_daily_trading():
@@ -320,7 +324,7 @@ def run_daily_trading():
 
     while True:
         if not is_market_open():
-            print("the market is closed today. exit trading.")
+            logger.info("The market is closed today. Exit trading.")
             break
 
         # 毎日引けの30分前に取引実行
@@ -330,7 +334,7 @@ def run_daily_trading():
             rebalance_portfolio()
             break
 
-        if test_mode == True:
+        if TEST_MODE:
             test_datetime += timedelta(minutes=30)
         else:
             # 1分ごとに市場時間をチェック

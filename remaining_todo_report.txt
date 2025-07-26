@@ -1,0 +1,91 @@
+=== 残存ToDo・改善点サマリー ===
+
+== 📊 総合統計 ==
+総問題数: 928
+高優先度: 52件
+中優先度: 146件
+低優先度: 730件
+
+== 📋 問題タイプ別統計 ==
+deprecated_pattern: 612件
+poor_documentation: 115件
+missing_documentation: 111件
+global_variable: 50件
+missing_test: 30件
+code_duplication: 5件
+naming_inconsistency: 3件
+circular_dependency: 2件
+
+== 🚨 高優先度問題 (要対応) ==
+📄 earnings_swing_short.py:27
+   Global variable usage detected: test_mode = False
+   コード: test_mode = False
+
+📄 earnings_swing_short.py:207
+   Global variable usage detected: global test_datetime
+   コード: global test_datetime
+
+📄 trend_reversion_etf.py:238
+   Global variable usage detected: global test_datetime
+   コード: global test_datetime
+
+📄 maintain_swing.py:57
+   Global variable usage detected: test_mode = False
+   コード: test_mode = False
+
+📄 maintain_swing.py:88
+   Global variable usage detected: global test_datetime
+   コード: global test_datetime
+
+📄 maintain_swing.py:243
+   Global variable usage detected: global test_datetime
+   コード: global test_datetime
+
+📄 maintain_swing.py:402
+   Global variable usage detected: global test_datetime
+   コード: global test_datetime
+
+📄 maintain_swing.py:514
+   Global variable usage detected: global test_mode, test_datetime
+   コード: global test_mode, test_datetime
+
+📄 maintain_swing.py:514
+   Global variable usage detected: global test_mode, test_datetime
+   コード: global test_mode, test_datetime
+
+📄 state_manager.py:476
+   Global variable usage detected: sm.update_state(test_mode=True, trading_enabled=False)
+   コード: sm.update_state(test_mode=True, trading_enabled=False)
+
+== ⚠️ 中優先度問題 (改善推奨) ==
+code_duplication: 5件
+  - earnings_swing_short.py:24 Potential code duplication: TZ_NY = ZoneInfo("US/Eastern")
+  - earnings_swing_short.py:25 Potential code duplication: TZ_UTC = ZoneInfo('UTC')
+  - news_analysis.py:22 Potential code duplication: ALPACA_ACCOUNT = 'live'
+missing_documentation: 111件
+  - earnings_swing_short.py:97 Function get_tickers_from_sheet lacks documentation
+  - earnings_swing_short.py:146 Function get_tickers_from_screener lacks documentation
+  - earnings_swing_short.py:206 Function sleep_until_open lacks documentation
+missing_test: 30件
+  - uptrend_count_sector.py:1 Module uptrend_count_sector lacks corresponding test file
+  - orb_global_refactor.py:1 Module orb_global_refactor lacks corresponding test file
+  - config.py:1 Module config lacks corresponding test file
+
+== ✅ 完了済み主要タスク ==
+1. ✅ 循環依存の解決 (インターフェース分離パターン)
+2. ✅ コード重複の削除 (共通定数の統一)
+3. ✅ 命名規則の統一 (定数のUPPER_CASE化)
+4. ✅ ドキュメント品質標準の策定
+5. ✅ 依存関係分析とリファクタリング計画
+
+== 🚀 推奨次ステップ ==
+1. 🚨 高優先度問題の解決
+2. ⚠️ 中優先度問題の段階的改善
+3. 🧪 テストカバレッジの向上
+4. 📚 ドキュメント品質の継続改善
+
+== 📈 品質改善の成果 ==
+- 🏗️ アーキテクチャ: 循環依存を解消、保守性向上
+- 🔄 コード品質: 重複削除、統一された命名規則
+- 📖 ドキュメント: 統一標準、APIリファレンス作成
+- 🛡️ 安定性: 依存性注入、状態管理の改善

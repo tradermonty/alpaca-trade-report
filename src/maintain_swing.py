@@ -265,7 +265,7 @@ def get_ema(symbol, period_ema):
     return ema
 
 
-def close_position(symbol, qty, retries=retry_config.ORDER_MAX_RETRIES, delay=retry_config.ORDER_RETRY_DELAY):
+def close_position(symbol, qty, retries=retry_config.ORDER_MAX_RETRIES, delay=retry_config.ORDER_RETRY_DELAY, strategy_name: str = 'maintain_swing'):
     try:
         pos = api.get_position(symbol)
         if pos is None:
@@ -304,6 +304,13 @@ def close_position(symbol, qty, retries=retry_config.ORDER_MAX_RETRIES, delay=re
                                          type='market',
                                          time_in_force='day')
                     print(resp)
+
+                    # trade log
+                    try:
+                        from trade_logger import log_trade
+                        log_trade(symbol, strategy_name, order_key='close', qty=qty, exit_price=None)
+                    except Exception as e:
+                        logger.warning(f'trade log failed: {e}')
                     return
 
                 except Exception as error:

@@ -9,10 +9,14 @@ from api_clients import get_alpaca_client
 import pytz
 from dotenv import load_dotenv
 import os
+from logging_config import get_logger
 
 # 環境変数の読み込み
 load_dotenv()
 GMAIL_PASSWORD = os.getenv('GMAIL_PASSWORD')
+
+# ロガー初期化
+logger = get_logger(__name__)
 
 # タイムゾーンの設定
 TZ_NY = pytz.timezone('America/New_York')
@@ -71,10 +75,10 @@ def send_email_via_gmail(subject, message, recipient_email, sender_email, sender
         # Disconnect from the server
         server.quit()
 
-        print("Email sent successfully!")
+        logger.info("Email sent successfully!")
 
     except Exception as e:
-        print(f"Failed to send email. Error: {e}")
+        logger.error("Failed to send email. Error: %s", e)
 
 
 # 200日移動平均との乖離率を計算する関数
@@ -104,7 +108,7 @@ def check_entry_conditions(symbol, deviation_threshold, rsi_min_threshold, lookb
         bars = bars.sort_index()
         
         # データ数の確認を追加
-        print(f"取得データ数: {len(bars)}日分")
+        logger.debug("取得データ数: %s 日分", len(bars))
         
         # 200日移動平均を計算
         bars['MA200'] = bars['close'].rolling(window=200).mean()
@@ -122,8 +126,8 @@ def check_entry_conditions(symbol, deviation_threshold, rsi_min_threshold, lookb
         bars['RSI_Slope_Switch'] = (bars['RSI_Change'].shift(1) < 0) & (bars['RSI_Change'] > 0)
         
         # デバッグ用の出力を追加
-        print(f"\n{symbol} の判定結果:")
-        print("=== 直近5日間のデータ ===")
+        logger.debug("\n%s の判定結果:", symbol)
+        logger.debug("=== 直近5日間のデータ ===")
         debug_cols = ['close', 'MA200', 'Deviation', 'Deviation_Min', 'RSI', 'RSI_Min', 'RSI_Change', 'RSI_Slope_Switch']
         debug_data = bars[debug_cols].tail()
         
@@ -133,20 +137,20 @@ def check_entry_conditions(symbol, deviation_threshold, rsi_min_threshold, lookb
         rsi_check = latest_data['RSI_Min'] < rsi_min_threshold
         slope_check = latest_data['RSI_Slope_Switch']
         
-        print("\n各指標の値:")
-        print(f"現在値: ${latest_data['close']:.2f}")
-        print(f"200日MA: ${latest_data['MA200']:.2f}")
-        print(f"乖離率: {latest_data['Deviation']:.2f}%")
-        print(f"乖離率の最小値: {latest_data['Deviation_Min']:.2f}% (閾値: {deviation_threshold}%)")
-        print(f"RSI: {latest_data['RSI']:.2f}")
-        print(f"RSIの最小値: {latest_data['RSI_Min']:.2f} (閾値: {rsi_min_threshold})")
-        print(f"RSIの変化: {latest_data['RSI_Change']:.2f}")
-        print(f"RSIの転換: {'はい' if slope_check else 'いいえ'}")
+        logger.debug("\n各指標の値:")
+        logger.debug("現在値: $%.2f", latest_data['close'])
+        logger.debug("200日MA: $%.2f", latest_data['MA200'])
+        logger.debug("乖離率: %.2f%%", latest_data['Deviation'])
+        logger.debug("乖離率の最小値: %.2f%% (閾値: %d%%)", latest_data['Deviation_Min'], deviation_threshold)
+        logger.debug("RSI: %.2f", latest_data['RSI'])
+        logger.debug("RSIの最小値: %.2f (閾値: %d)", latest_data['RSI_Min'], rsi_min_threshold)
+        logger.debug("RSIの変化: %.2f", latest_data['RSI_Change'])
+        logger.debug("RSIの転換: %s", 'はい' if slope_check else 'いいえ')
         
-        print("\n条件チェック:")
-        print(f"1. 乖離率が{deviation_threshold}%未満: {'○' if deviation_check else '×'}")
-        print(f"2. RSIが{rsi_min_threshold}未満: {'○' if rsi_check else '×'}")
-        print(f"3. RSIが上昇転換: {'○' if slope_check else '×'}")
+        logger.debug("\n条件チェック:")
+        logger.debug("1. 乖離率が%d%%未満: %s", deviation_threshold, '○' if deviation_check else '×')
+        logger.debug("2. RSIが%d未満: %s", rsi_min_threshold, '○' if rsi_check else '×')
+        logger.debug("3. RSIが上昇転換: %s", '○' if slope_check else '×')
         
         # 全ての条件を満たすかチェック
         all_conditions_met = deviation_check and rsi_check and slope_check
@@ -155,20 +159,20 @@ def check_entry_conditions(symbol, deviation_threshold, rsi_min_threshold, lookb
         is_recent = bars.index[-1].tz_localize(None) >= recent_period.replace(tzinfo=None)
         
         if all_conditions_met and is_recent:
-            print("\n🟢 エントリー条件を満たしました")
-            print("\n詳細データ:")
-            print(debug_data)
+            logger.info("🟢 %s エントリー条件を満たしました", symbol)
+            logger.debug("詳細データ:")
+            logger.debug("%s", debug_data)
             log_entry(symbol, debug_data)
             return True
         else:
             if not is_recent:
-                print("\n❌ 直近のデータではありません")
+                logger.info("❌ %s 直近のデータではありません", symbol)
             else:
-                print("\n❌ エントリー条件を満たしていません")
+                logger.info("❌ %s エントリー条件を満たしていません", symbol)
             return False
             
     except Exception as e:
-        print(f"エラー ({symbol}): {str(e)}")
+        logger.error("エラー (%s): %s", symbol, e)
         return False
 
 
@@ -187,7 +191,7 @@ if __name__ == '__main__':
         for signal in buy_signals:
             message += f"{signal}: https://elite.finviz.com/quote.ashx?t={signal}&p=d\n"
 
-        print(message)
+        logger.info(message)
 
         try:
             # 現在の日付をYYYY-MM-DD形式で取得
@@ -198,7 +202,7 @@ if __name__ == '__main__':
                                  "taku.saotome@gmail.com", "taku.saotome@gmail.com",
                                  GMAIL_PASSWORD)
         except Exception as error:
-            print("sending email failed.", error)
+            logger.error("Sending email failed: %s", error)
 
     else:
-        print("買いシグナルが出た銘柄はありませんでした。")
+        logger.info("買いシグナルが出た銘柄はありませんでした。")

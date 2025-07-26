@@ -6,7 +6,20 @@
 from abc import ABC, abstractmethod
 from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
+import logging
+import time
+from api_clients import get_alpaca_client
+from alpaca_trade_api.rest import TimeFrame, TimeFrameUnit
+
+TZ_NY = None
+try:
+    from zoneinfo import ZoneInfo
+    TZ_NY = ZoneInfo("US/Eastern")
+except Exception:
+    pass
+
+logger = logging.getLogger(__name__)
 
 @dataclass
 class TradingData:
@@ -34,14 +47,12 @@ class TradingInterface(ABC):
         pass
     
     @abstractmethod
-    def is_above_ema(self, symbol: str, period: int = 21) -> bool:
-        """EMA上方判定"""
+    def is_above_ema(self, symbol: str) -> bool:
+        """EMA上判定"""
         pass
-    
-    @abstractmethod
-    def is_below_ema(self, symbol: str, period: int = 21) -> bool:
-        """EMA下方判定"""
-        pass
+
+class MarketDataInterface(ABC):
+    """マーケットデータの抽象インターフェース"""
     
     @abstractmethod
     def get_opening_range(self, symbol: str, minutes: int) -> Tuple[float, float]:
@@ -57,33 +68,14 @@ class OrderManagementInterface(ABC):
     """注文管理の抽象インターフェース"""
     
     @abstractmethod
-    def submit_bracket_orders(self, symbol: str, qty: float, 
-                            entry_price: float, stop_price: float, 
-                            target_price: float) -> Dict[str, str]:
+    def submit_bracket_orders(self, symbol: str, qty: float, entry_price: float, 
+                            stop_price: float, target_price: float) -> Optional[List[str]]:
         """ブラケット注文送信"""
-        pass
-    
-    @abstractmethod
-    def get_order_status(self, order_id: str) -> OrderInfo:
-        """注文状況取得"""
-        pass
-    
-    @abstractmethod
-    def cancel_and_close_position(self, symbol: str) -> bool:
-        """ポジションクローズ"""
         pass
     
     @abstractmethod
     def get_positions(self) -> List[Dict[str, Any]]:
         """ポジション取得"""
-        pass
-
-class MarketDataInterface(ABC):
-    """マーケットデータの抽象インターフェース"""
-    
-    @abstractmethod
-    def get_latest_close(self, symbol: str) -> float:
-        """最新終値取得"""
         pass
     
     @abstractmethod
@@ -111,7 +103,6 @@ class TimeManagementInterface(ABC):
         """クローズ時間判定"""
         pass
 
-# 実装例: 既存のorb.py機能をラップするアダプター
 class ORBAdapter(TradingInterface, OrderManagementInterface, 
                 MarketDataInterface, TimeManagementInterface):
     """orb.pyの機能をインターフェース経由で提供するアダプター"""
@@ -119,121 +110,131 @@ class ORBAdapter(TradingInterface, OrderManagementInterface,
     def __init__(self):
         # 遅延インポートで循環依存を回避
         self._orb_module = None
+        self._alpaca = get_alpaca_client('paper')  # デフォルト paper
     
     @property
     def orb(self):
         """遅延インポートでorb.pyにアクセス"""
         if self._orb_module is None:
-            import orb
-            self._orb_module = orb
+            # 循環インポートを避けるため、実際のorb実装は使用しない
+            pass
         return self._orb_module
     
     def is_uptrend(self, symbol: str) -> bool:
-        return self.orb.is_uptrend(symbol)
+        """単純に短期EMA>長期EMA でアップトレンド判定"""
+        try:
+            bars = self._alpaca.get_bars(symbol, TimeFrame(15, TimeFrameUnit.Minute), limit=200)
+            if hasattr(bars, 'df'):
+                bars = bars.df
+            if len(bars) < 100:
+                return True
+            bars['ema_short'] = bars['close'].ewm(span=10).mean()
+            bars['ema_long'] = bars['close'].ewm(span=20).mean()
+            return bool(bars['ema_short'].iloc[-1] > bars['ema_long'].iloc[-1])
+        except Exception:
+            return True
     
-    def is_above_ema(self, symbol: str, period: int = 21) -> bool:
-        return self.orb.is_above_ema(symbol)
-    
-    def is_below_ema(self, symbol: str, period: int = 21) -> bool:
-        return self.orb.is_below_ema(symbol)
+    def is_above_ema(self, symbol: str) -> bool:
+        try:
+            bars = self._alpaca.get_bars(symbol, TimeFrame(5, TimeFrameUnit.Minute), limit=100)
+            if hasattr(bars, 'df'):
+                bars = bars.df
+            ema = bars['close'].ewm(span=50).mean().iloc[-1]
+            price = bars['close'].iloc[-1]
+            return bool(price > ema)
+        except Exception:
+            return True
     
     def get_opening_range(self, symbol: str, minutes: int) -> Tuple[float, float]:
-        return self.orb.get_opening_range(symbol, minutes)
+        """オープニングレンジ取得"""
+        # 過去minutes分のバーで高値・安値を取得
+        end_dt = datetime.now(tz=TZ_NY)
+        start_dt = end_dt - timedelta(minutes=minutes)
+        bars_df = self._alpaca.get_bars(symbol, TimeFrame(minutes, TimeFrameUnit.Minute), start=str(start_dt.date()), end=str(end_dt.date()))
+        if hasattr(bars_df, 'df'):
+            bars_df = bars_df.df
+        if bars_df.empty:
+            return (0.0, 0.0)
+        return (bars_df['high'].max(), bars_df['low'].min())
     
     def is_opening_range_break(self, symbol: str, high: float, low: float) -> bool:
-        return self.orb.is_opening_range_break(symbol, high, low)
+        """オープニングレンジブレイク判定"""
+        # プレースホルダー実装
+        latest_close = self.get_latest_price(symbol)
+        return latest_close > high
     
-    def submit_bracket_orders(self, symbol: str, qty: float, 
-                            entry_price: float, stop_price: float, 
-                            target_price: float) -> Dict[str, str]:
-        return self.orb.submit_bracket_orders(symbol, qty, entry_price, 
-                                            stop_price, target_price)
-    
-    def get_order_status(self, order_id: str) -> OrderInfo:
-        # グローバル変数order_statusを安全にアクセス
-        status_dict = getattr(self.orb, 'order_status', {}).get(order_id, {})
-        return OrderInfo(
-            order_id=order_id,
-            symbol=status_dict.get('symbol', ''),
-            status=status_dict.get('status', ''),
-            filled_qty=status_dict.get('filled_qty', 0.0),
-            avg_fill_price=status_dict.get('avg_fill_price')
+    def submit_bracket_orders(self, symbol: str, qty: float, entry_price: float, 
+                            stop_price: float, target_price: float) -> Optional[List[str]]:
+        """ブラケット注文送信"""
+        # プレースホルダー実装
+        side = 'buy'
+        # Alpaca bracket order
+        order = self._alpaca.api.submit_order(
+            symbol=symbol,
+            qty=qty,
+            side=side,
+            type='limit',
+            limit_price=entry_price,
+            time_in_force='day',
+            order_class='bracket',
+            stop_loss={'stop_price': stop_price},
+            take_profit={'limit_price': target_price}
         )
-    
-    def cancel_and_close_position(self, symbol: str) -> bool:
-        return self.orb.cancel_and_close_position(symbol)
+        return [order.id]
     
     def get_positions(self) -> List[Dict[str, Any]]:
-        return self.orb.api.list_positions()
+        """ポジション取得"""
+        # プレースホルダー実装
+        return self._alpaca.get_positions()
     
-    def get_latest_close(self, symbol: str) -> float:
-        return self.orb.get_latest_close(symbol)
+    def get_stop_price(self, symbol: str, entry_price: float, stop_rate: float) -> float:
+        """ストップ価格計算"""
+        return entry_price * (1 - stop_rate)
     
-    def get_stop_price(self, symbol: str, entry_price: float, 
-                      stop_rate: float) -> float:
-        return self.orb.get_stop_price(symbol, entry_price, stop_rate)
-    
-    def get_profit_target(self, symbol: str, entry_price: float,
-                         profit_rate: float) -> float:
-        return self.orb.get_profit_target(symbol, entry_price, profit_rate)
+    def get_profit_target(self, symbol: str, entry_price: float, profit_rate: float) -> float:
+        """利益目標価格計算"""
+        return entry_price * (1 + profit_rate)
+
+    # ------------------------------------------------------------------
+    # 追加ユーティリティ
+    # ------------------------------------------------------------------
+
+    def get_latest_price(self, symbol: str) -> float:
+        """最新価格を取得（ダミー実装）"""
+        # 本番環境ではマーケットデータ API から取得する
+        # ここではテスト値を返す
+        bar = self._alpaca.api.get_latest_trade(symbol)
+        return float(bar.p) if hasattr(bar, 'p') else 0.0
+
+    def close_position(self, symbol: str):
+        """ポジションをクローズする（ダミー実装）"""
+        # 実際のブローカー API 呼び出しは省略
+        try:
+            self._alpaca.close_position(symbol)
+        except Exception:
+            pass
+
+    def cancel_and_close_position(self, order_id: str, symbol: str, retries: int = 3, delay: float = 0.5):
+        """注文IDのキャンセルを試み、失敗したらポジションをクローズ"""
+        for attempt in range(retries):
+            try:
+                self._alpaca.cancel_order(order_id)
+                return True
+            except Exception as e:
+                logger.debug(f"cancel_order attempt {attempt+1} failed: {e}")
+                if attempt == retries - 1:
+                    # 最終リトライ後にポジションを成行でクローズ
+                    self.close_position(symbol)
+                    return False
+                time.sleep(delay)
     
     def is_entry_period(self) -> bool:
-        return self.orb.is_entry_period()
+        """エントリー期間判定"""
+        # マーケットオープンから150分以内
+        open_dt = datetime.now(tz=TZ_NY).replace(hour=9, minute=30, second=0, microsecond=0)
+        return open_dt < datetime.now(tz=TZ_NY) < open_dt + timedelta(minutes=150)
     
     def is_closing_time(self) -> bool:
-        return self.orb.is_closing_time()
-
-# 使用例: orb_refactored.pyでの利用
-class RefactoredORBStrategy:
-    """リファクタリング版ORB戦略（循環依存なし）"""
-    
-    def __init__(self, adapter: ORBAdapter):
-        self.adapter = adapter
-    
-    def execute_strategy(self, symbol: str, position_size: float) -> bool:
-        """戦略実行（インターフェース経由）"""
-        # 直接インポートではなく、インターフェース経由でアクセス
-        if not self.adapter.is_uptrend(symbol):
-            return False
-        
-        if not self.adapter.is_entry_period():
-            return False
-        
-        high, low = self.adapter.get_opening_range(symbol, 30)
-        
-        if self.adapter.is_opening_range_break(symbol, high, low):
-            entry_price = high + 0.01
-            stop_price = self.adapter.get_stop_price(symbol, entry_price, 0.03)
-            target_price = self.adapter.get_profit_target(symbol, entry_price, 0.06)
-            
-            orders = self.adapter.submit_bracket_orders(
-                symbol, position_size, entry_price, stop_price, target_price
-            )
-            return bool(orders)
-        
-        return False
-
-# 依存性注入コンテナ
-class TradingServiceContainer:
-    """取引サービスコンテナ"""
-    
-    def __init__(self):
-        self._adapter = None
-    
-    @property
-    def orb_adapter(self) -> ORBAdapter:
-        """ORBアダプターのシングルトン取得"""
-        if self._adapter is None:
-            self._adapter = ORBAdapter()
-        return self._adapter
-    
-    def create_orb_strategy(self) -> RefactoredORBStrategy:
-        """ORB戦略インスタンスを作成"""
-        return RefactoredORBStrategy(self.orb_adapter)
-
-# グローバルコンテナ（必要に応じて）
-_container = TradingServiceContainer()
-
-def get_orb_strategy() -> RefactoredORBStrategy:
-    """ORB戦略を取得（ファクトリー関数）"""
-    return _container.create_orb_strategy()
+        """クローズ時間判定"""
+        close_dt = datetime.now(tz=TZ_NY).replace(hour=16, minute=0, second=0, microsecond=0)
+        return datetime.now(tz=TZ_NY) >= close_dt

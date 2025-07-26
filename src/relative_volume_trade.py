@@ -48,7 +48,7 @@ TRADE_PY_FILE = 'src/orb_paper.py'
 
 def sleep_until_open(time_to_minutes=2):
     global test_datetime
-    if test_mode:
+    if TEST_MODE:
         market_dt = test_datetime.date()
     else:
         market_dt = date.today()
@@ -64,7 +64,7 @@ def sleep_until_open(time_to_minutes=2):
             days += 1
         else:
             open_time = cal[0].open
-            if test_mode:
+            if TEST_MODE:
                 current_dt = pd.Timestamp(test_datetime)
             else:
                 current_dt = pd.Timestamp(datetime.now().astimezone(TZ_NY))
@@ -78,23 +78,23 @@ def sleep_until_open(time_to_minutes=2):
             else:
                 while True:
                     if next_open_dt > current_dt + timedelta(minutes=time_to_minutes):
-                        print("time to next open", next_open_dt - current_dt)
-                        if test_mode:
+                        logger.info("Time to next open: %s", next_open_dt - current_dt)
+                        if TEST_MODE:
                             time.sleep(0.01)
                         else:
                             time.sleep(1)
                     else:
-                        print(current_dt, "open time reached.")
+                        logger.info("%s open time reached.", current_dt)
                         break
 
-                    if test_mode:
+                    if TEST_MODE:
                         test_datetime += timedelta(minutes=time_to_minutes)
                         current_dt = pd.Timestamp(test_datetime)
                     else:
                         current_dt = pd.Timestamp(datetime.now().astimezone(TZ_NY))
                 break
 
-            if test_mode:
+            if TEST_MODE:
                 test_datetime += timedelta(minutes=time_to_minutes)
 
 
@@ -132,7 +132,7 @@ def get_earnings_tickers():
             if ticker not in tickers:
                 tickers.append(ticker)
     else:
-        print("Failed to get earnings tickers from Finviz.")
+        logger.error("Failed to get earnings tickers from Finviz.")
 
     return tickers
 
@@ -172,7 +172,7 @@ def trade_relative_volume_stocks(num):
     df = finviz_client.get_screener_data(screener_url)
     
     if df is not None and len(df) > 0:
-        print(df)
+        logger.debug("Filtered dataframe:\n%s", df)
         df['score'] = 0
 
     #        # EPS Surprise 8%-: 1, 15%- : 2, 30%- : 3
@@ -213,7 +213,7 @@ def trade_relative_volume_stocks(num):
         # Filter top N tickers
         filtered_df = df.sort_values(by='No.', ascending=True).head(20)
     else:
-        print("Failed to get relative volume data from Finviz.")
+        logger.error("Failed to get relative volume data from Finviz.")
         return
 
     earnings_tickers = get_earnings_tickers()
@@ -273,14 +273,13 @@ def _analyze_execution_results(results):
     
     if successful:
         logger.info(f"Successfully executed trades: {successful}")
-        
-        # 実行時間の統計
-        execution_times = [result.execution_time for result in results.values() if result.success]
-        if execution_times:
-            avg_time = sum(execution_times) / len(execution_times)
-            max_time = max(execution_times)
-            min_time = min(execution_times)
-            logger.info(f"Execution time stats - Avg: {avg_time:.2f}s, Min: {min_time:.2f}s, Max: {max_time:.2f}s")
+
+        try:
+            from trade_logger import log_trade
+            for sym in successful:
+                log_trade(sym, 'relative_volume')
+        except Exception as e:
+            logger.warning(f"trade logging failed in relative_volume: {e}")
     
     if failed:
         logger.error(f"Failed to execute trades: {failed}")

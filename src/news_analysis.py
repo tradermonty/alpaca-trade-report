@@ -12,9 +12,13 @@ from openai import OpenAI
 from alpaca_trade_api.common import URL
 import webbrowser
 from dotenv import load_dotenv
+from logging_config import get_logger
 
 # .envファイルの読み込み
 load_dotenv()
+
+# ロガー初期化
+logger = get_logger(__name__)
 
 # OpenAI APIキーを設定
 client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
@@ -138,11 +142,11 @@ def get_news_from_finviz(ticker, target_date):
             
             return news_items
         else:
-            print(f"No news found for {ticker} on Finviz")
+            logger.info("No news found for %s on Finviz", ticker)
             return []
             
     except Exception as e:
-        print(f"Error fetching news from Finviz for {ticker}: {str(e)}")
+        logger.error("Error fetching news from Finviz for %s: %s", ticker, e)
         return []
 
 
@@ -155,7 +159,7 @@ def get_news_from_alpha_vantage(ticker, start_time, end_time):
     data = response.json()
 
     if "feed" not in data:
-        print(f"No news articles found for {ticker} from Alpha Vantage.")
+        logger.info("No news articles found for %s from Alpha Vantage.", ticker)
         return []
 
     articles = data["feed"]
@@ -290,7 +294,7 @@ def analyze_articles_and_get_json(ticker, alpaca_articles, finviz_articles, alph
 
         result = json.loads(cleaned_answer)
     except (json.JSONDecodeError, ValueError) as e:
-        print(f"Error decoding JSON: {e}")
+        logger.error("Error decoding JSON: %s", e)
         result = {"category": 99, "reason": "Failed to analyze news.", "ticker": ticker, "probability": 0}
 
     result["ticker"] = ticker
@@ -303,7 +307,7 @@ def analyze(ticker, date, model='gpt-4o-mini', detailed=False, lang='ja'):
     try:
         datetime.strptime(date, '%Y-%m-%d')
     except ValueError:
-        print("Invalid date format. Please use YYYY-MM-DD.")
+        logger.error("Invalid date format. Please use YYYY-MM-DD.")
         result = {"category": 99, "reason": "Invalid date format. Please use YYYY-MM-DD.", "ticker": ticker,
                   "probability": 0}
         return result
@@ -315,7 +319,7 @@ def analyze(ticker, date, model='gpt-4o-mini', detailed=False, lang='ja'):
     alpha_vantage_articles = []
 
     if not alpaca_articles and not finviz_articles and not alpha_vantage_articles:
-        print(f"No news articles found for {ticker}.")
+        logger.info("No news articles found for %s.", ticker)
         result = {"category": 99, "reason": "No news articles found.", "ticker": ticker, "probability": 0}
         return result
 
@@ -352,7 +356,7 @@ def main():
     results = []
     for ticker in args.tickers:
         result = analyze(ticker, args.date, model=args.model, detailed=args.detailed, lang=args.lang)
-        print(json.dumps(result, ensure_ascii=False, indent=2))
+        logger.info(json.dumps(result, ensure_ascii=False, indent=2))
         results.append(result)
 
     # 詳細モードの場合はDataFrameの列を調整して2つの表を作成
@@ -391,7 +395,7 @@ def main():
                 analysis_df = pd.DataFrame(analysis_data)
                 markdown_table += analysis_df.to_markdown(index=False)
 
-    print(markdown_table)
+    logger.info(markdown_table)
 
     # 言語に応じてファイル名を設定
     output_file = "news_analysis_results_en.md" if args.lang == 'en' else "news_analysis_results.md"

@@ -5,6 +5,7 @@ import time
 import asyncio
 from datetime import datetime, date, timedelta
 import os
+from pathlib import Path
 from dotenv import load_dotenv
 from typing import List, Optional
 from logging_config import get_logger
@@ -79,10 +80,6 @@ def get_tickers_from_screener(num):
     tickers = []
 
     try:
-        # 中小型株のシンボルを取得
-        mid_small_symbols = set(get_mid_small_cap_symbols())
-        logger.info(f"スクリーニング対象の中小型株銘柄数: {len(mid_small_symbols)}")
-
         # FinvizClientを使用してスクリーナーURLを構築
         screener_url = finviz_client.build_screener_url(
             filters=EARNINGS_FILTERS,
@@ -94,13 +91,12 @@ def get_tickers_from_screener(num):
         df = finviz_client.get_screener_data(screener_url)
         
         if df is not None and len(df) > 0:
-            # Mid/Small cap銘柄のみをフィルタリング
-            df['Ticker'] = df['Ticker'].str.replace('-', '.')  # Finvizのフォーマットを変換
-            df = df[df['Ticker'].isin(mid_small_symbols)]
-            logger.info(f"中小型株のみに絞り込み後: {len(df)}銘柄")
+            # Finvizのフォーマットを変換（BRK-B → BRK.B など）
+            df['Ticker'] = df['Ticker'].str.replace('-', '.')
+            logger.info(f"対象銘柄数（全銘柄）: {len(df)}")
 
             if len(df) == 0:
-                logger.warning("条件に合致する中小型株が見つかりませんでした")
+                logger.warning("条件に合致する銘柄が見つかりませんでした")
                 return []
 
             # 株価変動率による絞り込み
@@ -150,8 +146,11 @@ def get_tickers_from_screener(num):
             # Total score > 0
             filtered_df = df[df['score'] > 0]
 
-            # export screening result
-            filtered_df.to_csv('earnings/screen_' + datetime.today().strftime('%Y-%m-%d') + '.csv', index=False)
+            # export screening result to root-level 'earnings' directory (create if missing)
+            output_dir = Path('earnings')
+            output_dir.mkdir(parents=True, exist_ok=True)
+            output_file = output_dir / f"screen_{datetime.today().strftime('%Y-%m-%d')}.csv"
+            filtered_df.to_csv(output_file, index=False)
 
             filtered_df = filtered_df.sort_values(by='score', ascending=False)
 
@@ -175,9 +174,9 @@ def get_tickers_from_screener(num):
 
 
 def sleep_until_open(time_to_minutes=timing_config.DEFAULT_MINUTES_TO_OPEN):
-    global test_datetime
-    if test_mode:
-        market_dt = test_datetime.date()
+    global TEST_DATETIME
+    if TEST_MODE:
+        market_dt = TEST_DATETIME.date()
     else:
         market_dt = date.today()
 
@@ -192,8 +191,8 @@ def sleep_until_open(time_to_minutes=timing_config.DEFAULT_MINUTES_TO_OPEN):
             days += 1
         else:
             open_time = cal[0].open
-            if test_mode:
-                current_dt = pd.Timestamp(test_datetime)
+            if TEST_MODE:
+                current_dt = pd.Timestamp(TEST_DATETIME)
             else:
                 current_dt = pd.Timestamp(datetime.now().astimezone(TZ_NY))
 
@@ -207,7 +206,7 @@ def sleep_until_open(time_to_minutes=timing_config.DEFAULT_MINUTES_TO_OPEN):
                 while True:
                     if next_open_dt > current_dt + timedelta(minutes=time_to_minutes):
                         logger.debug(f"time to next open: {next_open_dt - current_dt}")
-                        if test_mode:
+                        if TEST_MODE:
                             time.sleep(timing_config.TEST_MODE_SLEEP)
                         else:
                             time.sleep(timing_config.PRODUCTION_SLEEP_MINUTE)
@@ -215,15 +214,15 @@ def sleep_until_open(time_to_minutes=timing_config.DEFAULT_MINUTES_TO_OPEN):
                         logger.info(f"{current_dt} - open time reached.")
                         break
 
-                    if test_mode:
-                        test_datetime += timedelta(minutes=time_to_minutes)
-                        current_dt = pd.Timestamp(test_datetime)
+                    if TEST_MODE:
+                        TEST_DATETIME += timedelta(minutes=time_to_minutes)
+                        current_dt = pd.Timestamp(TEST_DATETIME)
                     else:
                         current_dt = pd.Timestamp(datetime.now().astimezone(TZ_NY))
                 break
 
-            if test_mode:
-                test_datetime += timedelta(minutes=time_to_minutes)
+            if TEST_MODE:
+                TEST_DATETIME += timedelta(minutes=time_to_minutes)
 
 
 def swing_earnings_stocks():
@@ -388,6 +387,14 @@ def _analyze_execution_results(results):
     
     if successful:
         logger.info(f"Successfully executed trades: {successful}")
+
+        # トレードログに記録
+        try:
+            from trade_logger import log_trade
+            for sym in successful:
+                log_trade(sym, 'earnings_swing')
+        except Exception as e:
+            logger.warning(f"trade logging failed in earnings_swing: {e}")
         
         # 実行時間の統計
         execution_times = [result.execution_time for result in results.values() if result.success]

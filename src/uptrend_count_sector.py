@@ -14,7 +14,11 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
 from common_constants import TIMEZONE
+from logging_config import get_logger
 load_dotenv()
+
+# ロガー初期化
+logger = get_logger(__name__)
 
 sectors =[
     "sec_basicmaterials",
@@ -212,14 +216,14 @@ def is_closing_time_range(range_minutes=1):
         close_time = cal[0].close
         close_dt = pd.Timestamp(str(current_dt.date()) + " " + str(close_time), tz=TZ_NY)
     else:
-        print("market will not open on the date.")
+        logger.info("Market will not open on the date.")
         return
 
     if close_dt - timedelta(minutes=range_minutes) <= current_dt < close_dt:
-        print("past closing time")
+        logger.debug("Past closing time")
         return True
     else:
-        print(current_dt, "it's not in closing time range")
+        logger.debug("%s it's not in closing time range", current_dt)
         return False
 
 
@@ -248,10 +252,10 @@ def sleep_until_next_close(time_to_minutes=1):
             else:
                 while True:
                     if next_close_dt > current_dt + timedelta(minutes=time_to_minutes):
-                        print("time to next close", next_close_dt - current_dt)
+                        logger.info("Time to next close: %s", next_close_dt - current_dt)
                         time.sleep(60)
                     else:
-                        print(current_dt, "close time reached.")
+                        logger.info("%s close time reached.", current_dt)
                         break
 
                     current_dt = pd.Timestamp(datetime.datetime.now().astimezone(TZ_NY))
@@ -269,7 +273,7 @@ def update_trend_count():
 
     cal = api.get_calendar(start=str(datetime.date.today()), end=str(datetime.date.today()))
     if len(cal) <= 0:
-        print("market will not open today.")
+        logger.info("Market will not open today.")
         weekday = False
         return
 
@@ -285,7 +289,7 @@ def update_trend_count():
             ratio = uptrend_count/total_count
         else:
             ratio = 0
-        print(sector, uptrend_count, total_count, f"{ratio:.2%}")
+        logger.debug("%s %s %s %.2f%%", sector, uptrend_count, total_count, ratio*100)
 
         # Google Drive APIと連携するためのクライアントを作成
         scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
@@ -309,7 +313,7 @@ def update_trend_count():
                 break
 
         if row_to_update is None:
-            print("シートに今日の日付が見つかりませんでした。")
+            logger.warning("シートに今日の日付が見つかりませんでした。")
             for i, record in enumerate(data):
                 if str(record['Date']) == "":
                     row_to_update = i + 2  # gspreadのインデックスは1から始まるので、ヘッダ行の分を加算
@@ -319,7 +323,7 @@ def update_trend_count():
         # 'Count', 'Total' 列を更新
         sheet.update_cell(row_to_update, 2, uptrend_count)  # 'Count'が2列目の場合
         sheet.update_cell(row_to_update, 3, total_count)  # 'Total'が3列目の場合
-        print(f"行 {row_to_update} を値 {uptrend_count} で更新しました。")
+        logger.info("行 %s を値 %s で更新しました。", row_to_update, uptrend_count)
 
     # for industry in industries:
     #     time.sleep(1)

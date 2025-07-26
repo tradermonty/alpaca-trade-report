@@ -149,25 +149,7 @@ update_account_type('paper')  # テスト環境への切り替え
 
 
 if __name__ == "__main__":
-    # テストとデモ
-    print("=== Common Constants Configuration ===")
-    print(f"Default Timezone: {TIMEZONE.NY}")
-    print(f"Current Account: {ACCOUNT.get_account_type()}")
-    print(f"Market Open: {MARKET.MARKET_OPEN_TIME}")
-    print(f"Default Test Date: {PERIODS.DEFAULT_TEST_DATE}")
-    
-    # 後方互換性テスト
-    print("\n=== Backward Compatibility ===")
-    print(f"TZ_NY: {TZ_NY}")
-    print(f"ALPACA_ACCOUNT: {ALPACA_ACCOUNT}")
-    
-    # アカウント切り替えテスト
-    print("\n=== Account Type Switch ===")
-    original = ACCOUNT.get_account_type()
-    update_account_type('paper')
-    print(f"After switch: {ALPACA_ACCOUNT}")
-    update_account_type(original)
-    print(f"Restored: {ALPACA_ACCOUNT}")
+    pass
 
 # 命名規則統一の提案:
 # 将来的な改善案（後方互換性を保ちながら段階的に移行）

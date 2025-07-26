@@ -14,7 +14,11 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
 from common_constants import TIMEZONE
+from logging_config import get_logger
 load_dotenv()
+
+# ロガー初期化
+logger = get_logger(__name__)
 
 # API クライアント初期化
 alpaca_client = get_alpaca_client('live')
@@ -58,10 +62,9 @@ while attempt < max_retries:
 
     except Exception as error:
         attempt += 1
-        print(datetime.datetime.now().astimezone(TZ_NY),
-              "failed to open spreadsheet.", error)
+        logger.warning("failed to open spreadsheet: %s", error)
         if attempt == max_retries:
-            print("reached maximum retries. Continuing without spreadsheet access.")
+            logger.error("Reached maximum retries. Continuing without spreadsheet access.")
             sheet = None
         else:
             time.sleep(10)
@@ -80,14 +83,14 @@ def is_closing_time_range(range_minutes=1):
         close_time = cal[0].close
         close_dt = pd.Timestamp(str(current_dt.date()) + " " + str(close_time), tz=TZ_NY)
     else:
-        print("market will not open on the date.")
+        logger.info("Market will not open on the date.")
         return False
 
     if close_dt - timedelta(minutes=range_minutes) <= current_dt < close_dt:
-        print("past closing time")
+        logger.debug("Past closing time")
         return True
     else:
-        print(current_dt, "it's not in closing time range")
+        logger.debug("%s it's not in closing time range", current_dt)
         return False
 
 
@@ -116,10 +119,10 @@ def sleep_until_next_close(time_to_minutes=1):
             else:
                 while True:
                     if next_close_dt > current_dt + timedelta(minutes=time_to_minutes):
-                        print("time to next close", next_close_dt - current_dt)
+                        logger.info("Time to next close: %s", next_close_dt - current_dt)
                         time.sleep(60)
                     else:
-                        print(current_dt, "close time reached.")
+                        logger.info("%s close time reached.", current_dt)
                         break
 
                     current_dt = pd.Timestamp(datetime.datetime.now().astimezone(TZ_NY))
@@ -137,14 +140,14 @@ def update_trend_count(force=False):
 
     cal = api.get_calendar(start=str(datetime.date.today()), end=str(datetime.date.today()))
     if len(cal) <= 0:
-        print("market will not open today.")
+        logger.info("Market will not open today.")
         weekday = False
         return
 
     if force:
-        print("execute update")
+        logger.info("Execute update")
     else:
-        print("wait for time to close")
+        logger.info("Wait for time to close")
         while weekday:
             sleep_until_next_close(time_to_minutes=close_time_range)
             if is_closing_time_range(range_minutes=close_time_range):
@@ -169,7 +172,7 @@ def update_trend_count(force=False):
             break
 
     if row_to_update is None:
-        print("シートに今日の日付が見つかりませんでした。")
+        logger.warning("シートに今日の日付が見つかりませんでした。")
         for i, record in enumerate(data):
             if str(record['Date']) == "":
                 row_to_update = i + 2  # gspreadのインデックスは1から始まるので、ヘッダ行の分を加算
@@ -179,7 +182,7 @@ def update_trend_count(force=False):
     # 'Count', 'Total' 列を更新
     sheet.update_cell(row_to_update, 2, uptrend_count)  # 'Count'が2列目の場合
     sheet.update_cell(row_to_update, 3, total_count)  # 'Total'が3列目の場合
-    print(f"行 {row_to_update} を値 {uptrend_count} で更新しました。")
+    logger.info("行 %s を値 %s で更新しました。", row_to_update, uptrend_count)
 
 
 def is_uptrend(date=None):
@@ -199,7 +202,7 @@ def is_uptrend(date=None):
             break
 
     if row_to_update is None:
-        print("Unable to get today's data.")
+        logger.warning("Unable to get today's data.")
         return False
 
     count = sheet.get(COL_COUNT + str(row_to_update))[0]
@@ -242,7 +245,7 @@ def is_downtrend(date=None):
             break
 
     if row_to_update is None:
-        print("Unable to get data.")
+        logger.warning("Unable to get data.")
         return False
 
     count = sheet.get(COL_COUNT + str(row_to_update))[0]
@@ -282,7 +285,7 @@ def is_overbought(check_prev=False):
             break
 
     if row_to_update is None:
-        print("Unable to get today's data.")
+        logger.warning("Unable to get today's data.")
         return False
 
     count = sheet.get(COL_COUNT + str(row_to_update))[0]
@@ -340,7 +343,7 @@ def is_oversold(check_prev=False):
             break
 
     if row_to_update is None:
-        print("Unable to get today's data.")
+        logger.warning("Unable to get today's data.")
         return False
 
     count = sheet.get(COL_COUNT + str(row_to_update))[0]
@@ -399,7 +402,7 @@ def get_long_signal():
             break
 
     if row_to_update is None:
-        print("Unable to get today's data.")
+        logger.warning("Unable to get today's data.")
         return signal
 
     count = sheet.get(COL_COUNT + str(row_to_update))[0]
@@ -438,7 +441,7 @@ def get_short_signal():
             break
 
     if row_to_update is None:
-        print("Unable to get today's data.")
+        logger.warning("Unable to get today's data.")
         return signal
 
     count = sheet.get(COL_COUNT + str(row_to_update))[0]

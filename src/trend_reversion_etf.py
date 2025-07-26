@@ -137,7 +137,7 @@ def send_bracket_order(symbol, qty, limit_price, profit_target, stop_price):
     return resp
 
 
-def close_position(symbol, qty=0, retries=3, delay=0.5):
+def close_position(symbol, qty=0, retries=3, delay=0.5, strategy_name: str = 'trend_reversion_etf'):
     try:
         pos = api.get_position(symbol)
 
@@ -165,12 +165,18 @@ def close_position(symbol, qty=0, retries=3, delay=0.5):
             try:
                 print("submitting sell order", symbol, "qty", qty)
                 resp = api.submit_order(symbol=symbol,
-                                        qty=qty,
+                                        qty=qty if qty == 0 else qty,
                                         side='sell',
                                         type='market',
                                         time_in_force='day')
                 print(resp)
-                return
+
+                try:
+                    from trade_logger import log_trade
+                    log_trade(symbol, strategy_name, order_key='close', qty=qty)
+                except Exception:
+                    pass
+                break
 
             except Exception as error:
                 print(symbol,
