@@ -243,16 +243,16 @@ def get_bars(self, symbol, timeframe, start=None, end=None, limit=None, page_tok
 
 ---
 
-## 2. EODHD API統合
+## 2. FMP API統合
 
 ### データプロバイダー機能
 ```python
-class EODHDClient:
-    """EODHD API統合クライアント（市場データ・基本情報）"""
+class FMPClient:
+    """FMP API統合クライアント（市場データ・基本情報）"""
     
     def __init__(self):
-        self.api_key = os.getenv('EODHD_API_KEY')
-        self.base_url = 'https://eodhd.com/api'
+        self.api_key = os.getenv('FMP_API_KEY')
+        self.base_url = 'https://fmpcloud.io/api/v3'
         self.session = self._create_session()
         
     def _create_session(self):
@@ -264,7 +264,7 @@ class EODHDClient:
             pool_connections=system_config.CONNECTION_POOL_SIZE,
             pool_maxsize=system_config.CONNECTION_POOL_SIZE,
             max_retries=Retry(
-                total=retry_config.EODHD_MAX_RETRIES,
+                total=retry_config.FMP_MAX_RETRIES,
                 backoff_factor=0.5,
                 status_forcelist=[500, 502, 503, 504, 429]
             )
@@ -712,7 +712,7 @@ class APIHealthMonitor:
     def __init__(self):
         self.api_status = {
             'alpaca': {'status': 'unknown', 'last_check': None, 'response_time': None},
-            'eodhd': {'status': 'unknown', 'last_check': None, 'response_time': None},
+            'fmp': {'status': 'unknown', 'last_check': None, 'response_time': None},
             'finviz': {'status': 'unknown', 'last_check': None, 'response_time': None},
             'google_sheets': {'status': 'unknown', 'last_check': None, 'response_time': None}
         }
@@ -759,10 +759,10 @@ class APIHealthMonitor:
             account = client.get_account()
             return account is not None
             
-        elif api_name == 'eodhd':
-            client = get_eodhd_client()
+        elif api_name == 'fmp':
+            client = get_fmp_client()
             # 軽量なAPIコール実行
-            result = client.get_market_cap_data('MID.INDX')
+            result = client.get_historical_price_data('AAPL', '2023-12-01', '2023-12-02')
             return len(result) > 0
             
         elif api_name == 'finviz':

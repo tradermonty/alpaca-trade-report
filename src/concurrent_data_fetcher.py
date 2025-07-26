@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 import requests
 from logging_config import get_logger
 from config import system_config, timing_config
-from api_clients import get_eodhd_client
+from api_clients import get_fmp_client
 
 logger = get_logger(__name__)
 
@@ -39,14 +39,14 @@ async def _get_price_filtered_tickers_concurrent(
     # セマフォでAPI呼び出し数を制限
     semaphore = asyncio.Semaphore(system_config.MAX_CONCURRENT_API_CALLS)
     
-    # EODHDクライアントを取得
-    eodhd_client = get_eodhd_client()
+    # FMPクライアントを取得
+    fmp_client = get_fmp_client()
     
     # 並行処理でデータ取得
     tasks = []
     for ticker in tickers:
         task = _fetch_and_filter_ticker_data(
-            semaphore, eodhd_client, ticker, start_date, end_date, min_price_change
+            semaphore, fmp_client, ticker, start_date, end_date, min_price_change
         )
         tasks.append(task)
     
@@ -76,7 +76,7 @@ async def _get_price_filtered_tickers_concurrent(
 
 async def _fetch_and_filter_ticker_data(
     semaphore: asyncio.Semaphore,
-    eodhd_client,
+    fmp_client,
     ticker: str,
     start_date: str,
     end_date: str,
@@ -87,7 +87,7 @@ async def _fetch_and_filter_ticker_data(
     
     Args:
         semaphore: 並行数制限用セマフォ
-        eodhd_client: EODHDクライアント
+        fmp_client: FMPクライアント
         ticker: 銘柄シンボル
         start_date: 開始日
         end_date: 終了日
@@ -102,7 +102,7 @@ async def _fetch_and_filter_ticker_data(
             await asyncio.sleep(0)  # 他のタスクに制御を譲る
             
             # 株価データの取得
-            price_data = await _get_historical_data_async(eodhd_client, ticker, start_date, end_date)
+            price_data = await _get_historical_data_async(fmp_client, ticker, start_date, end_date)
             
             if price_data is None or len(price_data) < timing_config.MIN_TRADING_DAYS:
                 logger.warning(f"{ticker}: 十分な株価データがありません")
@@ -130,12 +130,12 @@ async def _fetch_and_filter_ticker_data(
             return False
 
 
-async def _get_historical_data_async(eodhd_client, symbol: str, start_date: str, end_date: str) -> Optional[pd.DataFrame]:
+async def _get_historical_data_async(fmp_client, symbol: str, start_date: str, end_date: str) -> Optional[pd.DataFrame]:
     """
     非同期で株価データを取得（実際は同期処理だが非同期コンテキスト内で実行）
     
     Args:
-        eodhd_client: EODHDクライアント
+        fmp_client: FMPクライアント
         symbol: 銘柄シンボル
         start_date: 開始日
         end_date: 終了日
@@ -146,18 +146,21 @@ async def _get_historical_data_async(eodhd_client, symbol: str, start_date: str,
     try:
         # 実際のデータ取得は同期的だが、非同期コンテキストで実行
         loop = asyncio.get_event_loop()
-        price_data = await loop.run_in_executor(
-            None, 
-            eodhd_client.get_historical_data, 
-            f"{symbol}.US", 
-            start_date, 
+        raw_data = await loop.run_in_executor(
+            None,
+            fmp_client.get_historical_price_data,
+            symbol,
+            start_date,
             end_date
         )
-        
-        if price_data and not price_data.empty:
-            return price_data
-        else:
-            return None
+
+        if raw_data:
+            df = pd.DataFrame(raw_data)
+            if 'date' in df.columns:
+                df['date'] = pd.to_datetime(df['date'])
+                df.set_index('date', inplace=True)
+            return df if not df.empty else None
+        return None
             
     except Exception as e:
         logger.error(f"Error fetching historical data for {symbol}: {e}")

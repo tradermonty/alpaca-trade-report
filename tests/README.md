@@ -82,7 +82,7 @@ open htmlcov/index.html
 
 ### APIレスポンスのモック
 - `mock_finviz_response`: Finvizスクリーナーのレスポンス
-- `mock_eodhd_response`: EODHD APIのレスポンス
+- `mock_fmp_response`: FMP APIのレスポンス
 - `mock_alpaca_api`: Alpaca APIのモック
 
 ### サンプルデータ

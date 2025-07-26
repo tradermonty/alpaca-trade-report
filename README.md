@@ -49,7 +49,7 @@ ALPACA_SECRET_KEY_PAPER=あなたのペーパーシークレットキー
 FINVIZ_API_KEY=あなたのFinviz Eliteキー
 OPENAI_API_KEY=あなたのOpenAI APIキー
 ALPHA_VANTAGE_API_KEY=あなたのAlpha Vantageキー
-EODHD_API_KEY=あなたのEODHD APIキー
+FMP_API_KEY=あなたのFMP APIキー
 ```
 
 ### 3. Google Sheets認証
@@ -111,7 +111,7 @@ python src/uptrend_count_sector.py
 - **Google Sheets**: 手動取引指示、データ管理
 - **OpenAI**: ニュース感情分析
 - **Alpha Vantage**: 追加市場データ
-- **EODHD**: 時価総額データ
+- **Financial Modeling Prep (FMP)**: 時価総額データ、履歴株価
 
 ## 注意事項
 

@@ -225,11 +225,6 @@ class FMPDataFetcher:
                 f"FMP Premium plan制限: 2020年8月1日以降のデータのみ利用可能\n\n"
                 f"解決策:\n"
                 f"1. 開始日を2020-08-01以降に変更\n"
-                f"   python main.py --start_date 2020-08-01\n\n"
-                f"2. EODHDデータソースを使用（2015年以降対応）\n"
-                f"   python main.py --start_date {from_date} --end_date {to_date}\n"
-                f"   （--use_fmpオプションを外してEODHDを使用）\n\n"
-                f"注意: EODHDは決算日精度が低い（44%）ですが、長期間の分析が可能です\n"
                 f"{'='*60}"
             )
             logger.error(error_msg)
@@ -238,7 +233,7 @@ class FMPDataFetcher:
         # 開始日が制限日以降でも、一部が制限範囲に入る場合の警告
         if start_dt < datetime(2020, 9, 1):
             logger.warning(f"Warning: FMP data coverage may be limited for dates close to August 2020. "
-                         f"For comprehensive historical analysis, consider using EODHD data source.")
+                         f"For comprehensive historical analysis, consider using alternative data source.")
         
         # 期間が90日を超える場合は分割
         max_days = 30  # 30日ごとに分割（安全マージン）

@@ -46,7 +46,7 @@ class SystemState:
     # 外部サービス状態
     api_health_status: Dict[str, str] = field(default_factory=lambda: {
         'alpaca': 'unknown',
-        'eodhd': 'unknown', 
+        'fmp': 'unknown',  # FMPに移行済み
         'finviz': 'unknown',
         'google_sheets': 'unknown'
     })

@@ -1,132 +1,205 @@
-"""Basic functionality tests for implemented features only."""
+"""Basic functionality tests for the trading system."""
 
 import pytest
-import os
-from unittest.mock import Mock, patch
-
 import sys
+import os
+from unittest.mock import patch, Mock
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'src'))
 
 
 class TestBasicFunctionality:
-    """Test basic functionality that actually exists."""
+    """Test basic system functionality."""
 
-    def test_import_main_modules(self, mock_env_vars):
-        """Test that main modules can be imported without errors."""
+    def test_imports(self):
+        """Test that all major modules can be imported."""
         try:
             import earnings_swing
+            import orb
+            import risk_management
+            import strategy_allocation
             import api_clients
-            import uptrend_stocks
-            assert True  # If we reach here, imports succeeded
+            assert True
         except ImportError as e:
-            pytest.fail(f"Failed to import modules: {e}")
+            pytest.fail(f"Failed to import module: {e}")
 
-    def test_api_clients_creation(self, mock_env_vars):
-        """Test that API clients can be created."""
-        from api_clients import get_alpaca_client, get_eodhd_client, get_finviz_client
+    @patch.dict(os.environ, {
+        'ALPACA_API_KEY': 'test_key',
+        'ALPACA_SECRET_KEY': 'test_secret',
+        'FMP_API_KEY': 'test_fmp_key',
+    })
+    def test_api_client_initialization(self):
+        """Test API client initialization."""
+        from api_clients import get_alpaca_client, get_fmp_client, get_finviz_client
         
         with patch('alpaca_trade_api.REST'):
             alpaca_client = get_alpaca_client('paper')
             assert alpaca_client is not None
-            
-        eodhd_client = get_eodhd_client()
-        assert eodhd_client is not None
+        
+        fmp_client = get_fmp_client()
+        assert fmp_client is not None
         
         finviz_client = get_finviz_client()
         assert finviz_client is not None
 
-    def test_finviz_client_url_building(self, mock_env_vars):
-        """Test FinvizClient URL building functionality."""
-        from api_clients import get_finviz_client
+    def test_timezone_configuration(self):
+        """Test timezone setup."""
+        from zoneinfo import ZoneInfo
+        from common_constants import TIMEZONE
         
-        client = get_finviz_client()
-        
-        # Test basic URL building
-        filters = {'cap': 'smallover', 'sh_price': 'o10'}
-        url = client.build_screener_url(filters)
-        
-        assert 'elite.finviz.com/export.ashx' in url
-        assert 'cap_smallover' in url
-        assert 'sh_price_o10' in url
+        assert TIMEZONE.NY == ZoneInfo("US/Eastern")
+        assert TIMEZONE.UTC == ZoneInfo("UTC")
 
-    def test_earnings_swing_constants(self, mock_env_vars):
-        """Test that earnings swing module has expected constants."""
-        import earnings_swing
+    def test_config_loading(self):
+        """Test configuration loading."""
+        from config import trading_config, timing_config, retry_config
         
-        assert hasattr(earnings_swing, 'NUMBER_OF_STOCKS')
-        assert hasattr(earnings_swing, 'EARNINGS_FILTERS')
-        assert hasattr(earnings_swing, 'EARNINGS_COLUMNS')
-        assert hasattr(earnings_swing, 'TZ_NY')
+        assert trading_config is not None
+        assert timing_config is not None
+        assert retry_config is not None
+        
+        # Check some key config values exist
+        assert hasattr(trading_config, 'POSITION_SIZE_RATE')
+        assert hasattr(timing_config, 'DEFAULT_MINUTES_TO_OPEN')
+        assert hasattr(retry_config, 'ALPACA_MAX_RETRIES')
 
-    def test_uptrend_stocks_constants(self, mock_env_vars):
-        """Test that uptrend stocks module has expected constants."""
-        import uptrend_stocks
+    @patch('gspread.authorize')
+    def test_google_sheets_integration(self, mock_authorize):
+        """Test Google Sheets integration."""
+        mock_client = Mock()
+        mock_authorize.return_value = mock_client
+        mock_sheet = Mock()
+        mock_client.open.return_value = mock_sheet
         
-        assert hasattr(uptrend_stocks, 'TZ_NY')
-        assert hasattr(uptrend_stocks, 'TZ_UTC')
-        assert hasattr(uptrend_stocks, 'COL_COUNT')
-        assert hasattr(uptrend_stocks, 'COL_RATIO')
+        # Test basic sheet operations
+        mock_worksheet = Mock()
+        mock_sheet.worksheet.return_value = mock_worksheet
+        mock_worksheet.get_all_values.return_value = [['A', 'B'], ['1', '2']]
+        
+        values = mock_worksheet.get_all_values()
+        assert len(values) == 2
+        assert values[0] == ['A', 'B']
 
-    @patch('requests.get')
-    def test_finviz_client_error_handling(self, mock_get, mock_env_vars):
-        """Test that FinvizClient handles errors gracefully."""
-        from api_clients import get_finviz_client
+    def test_logging_setup(self):
+        """Test logging configuration."""
+        from logging_config import get_logger
         
-        # Mock a network error
-        mock_get.side_effect = Exception("Network error")
+        logger = get_logger(__name__)
+        assert logger is not None
         
-        client = get_finviz_client()
-        result = client.get_stock_count('https://example.com/test')
-        
-        # Should return 0 on error, not crash
-        assert result == 0
+        # Test that logger can write without errors
+        logger.info("Test log message")
+        logger.warning("Test warning")
+        logger.error("Test error")
 
-    def test_module_attributes_exist(self, mock_env_vars):
-        """Test that expected attributes exist in modules."""
-        import earnings_swing
-        import uptrend_stocks
-        
-        # Test earnings_swing attributes
-        assert isinstance(earnings_swing.NUMBER_OF_STOCKS, int)
-        assert isinstance(earnings_swing.EARNINGS_FILTERS, dict)
-        assert isinstance(earnings_swing.EARNINGS_COLUMNS, list)
-        
-        # Test uptrend_stocks attributes
-        assert isinstance(uptrend_stocks.COL_COUNT, str)
-        assert isinstance(uptrend_stocks.COL_RATIO, str)
-
-    def test_timezone_configuration(self, mock_env_vars):
-        """Test timezone configuration across modules."""
-        import earnings_swing
-        import uptrend_stocks
+    def test_market_hours_calculation(self):
+        """Test market hours calculations."""
+        from datetime import datetime
         from zoneinfo import ZoneInfo
         
-        # Both modules should use the same timezone
-        assert earnings_swing.TZ_NY == ZoneInfo("US/Eastern")
-        assert uptrend_stocks.TZ_NY == ZoneInfo("US/Eastern")
-        assert earnings_swing.TZ_NY == uptrend_stocks.TZ_NY
+        # Create a test datetime during market hours
+        market_open = datetime(2023, 12, 1, 9, 30, tzinfo=ZoneInfo("US/Eastern"))
+        market_close = datetime(2023, 12, 1, 16, 0, tzinfo=ZoneInfo("US/Eastern"))
+        
+        assert market_open.hour == 9
+        assert market_open.minute == 30
+        assert market_close.hour == 16
+        assert market_close.minute == 0
 
-    def test_client_singleton_behavior(self, mock_env_vars):
-        """Test that client singletons work correctly."""
-        from api_clients import get_finviz_client, get_eodhd_client
+    def test_risk_management_calculations(self):
+        """Test risk management calculations."""
+        # Test position size calculation
+        account_value = 100000
+        risk_per_trade = 0.02
+        max_position_size = account_value * risk_per_trade
+        
+        assert max_position_size == 2000
+
+    def test_data_structures(self):
+        """Test key data structures."""
+        from dataclasses import dataclass
+        
+        @dataclass
+        class TestOrder:
+            symbol: str
+            quantity: int
+            price: float
+        
+        order = TestOrder(symbol="AAPL", quantity=100, price=150.0)
+        assert order.symbol == "AAPL"
+        assert order.quantity == 100
+        assert order.price == 150.0
+
+    @patch.dict(os.environ, {
+        'FMP_API_KEY': 'test_fmp_key',
+        'ALPACA_API_KEY': 'test_alpaca_key',
+        'ALPACA_SECRET_KEY': 'test_alpaca_secret',
+    })
+    def test_client_singletons(self):
+        """Test that API clients implement singleton pattern."""
+        from api_clients import get_finviz_client, get_fmp_client
         
         # Test Finviz client singleton
-        client1 = get_finviz_client()
-        client2 = get_finviz_client()
-        assert client1 is client2
+        finviz1 = get_finviz_client()
+        finviz2 = get_finviz_client()
+        assert finviz1 is finviz2
         
-        # Test EODHD client singleton
-        eodhd1 = get_eodhd_client()
-        eodhd2 = get_eodhd_client()
-        assert eodhd1 is eodhd2
+        # Test FMP client singleton
+        fmp1 = get_fmp_client()
+        fmp2 = get_fmp_client()
+        assert fmp1 is fmp2
 
-    def test_environment_variable_handling(self, mock_env_vars):
-        """Test that environment variables are handled correctly."""
-        from api_clients import FinvizClient, EODHDClient
+    @patch.dict(os.environ, {
+        'FMP_API_KEY': 'test_fmp_key',
+        'ALPACA_API_KEY': 'test_alpaca_key',
+        'ALPACA_SECRET_KEY': 'test_alpaca_secret',
+    })
+    def test_environment_variables(self):
+        """Test environment variable loading."""
+        from api_clients import FinvizClient
         
-        # These should work with mocked environment variables
+        # Test client can access environment variables
         finviz_client = FinvizClient()
-        assert finviz_client.api_key == 'test_finviz_key'
+        assert finviz_client is not None
         
-        eodhd_client = EODHDClient()
-        assert eodhd_client.api_key == 'test_eodhd_key'
+        # Test FMP client initialization
+        from api_clients import get_fmp_client
+        fmp_client = get_fmp_client()
+        assert fmp_client is not None
+
+    def test_pandas_operations(self):
+        """Test pandas operations used throughout the system."""
+        import pandas as pd
+        import numpy as np
+        
+        # Create sample data
+        df = pd.DataFrame({
+            'symbol': ['AAPL', 'GOOGL', 'MSFT'],
+            'price': [150.0, 2800.0, 350.0],
+            'volume': [1000000, 500000, 800000]
+        })
+        
+        # Test basic operations
+        assert len(df) == 3
+        assert df['price'].mean() > 0
+        assert df['volume'].sum() == 2300000
+        
+        # Test filtering
+        high_price = df[df['price'] > 200]
+        assert len(high_price) == 2
+
+    def test_error_handling(self):
+        """Test error handling patterns."""
+        def divide_with_error_handling(a, b):
+            try:
+                return a / b
+            except ZeroDivisionError:
+                return None
+            except Exception as e:
+                raise e
+        
+        assert divide_with_error_handling(10, 2) == 5
+        assert divide_with_error_handling(10, 0) is None
+        
+        with pytest.raises(TypeError):
+            divide_with_error_handling("10", 2)

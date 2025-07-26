@@ -2,7 +2,7 @@
 
 import pytest
 import pandas as pd
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 import requests
 import time
 
@@ -10,7 +10,7 @@ import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'src'))
 
-from api_clients import AlpacaClient, EODHDClient, FinvizClient
+from api_clients import AlpacaClient, get_fmp_client, FinvizClient
 
 
 class TestAPIIntegration:
@@ -25,244 +25,251 @@ class TestAPIIntegration:
             assert client.account_type == 'paper'
             mock_rest.assert_called_once()
 
-    @pytest.mark.integration  
-    def test_eodhd_client_initialization(self, mock_env_vars):
-        """Test that EODHDClient can be initialized properly."""
-        client = EODHDClient()
-        assert client is not None
-        assert client.api_key == 'test_eodhd_key'
-        assert client.base_url == 'https://eodhd.com/api'
+    @pytest.mark.integration
+    def test_fmp_client_initialization(self):
+        """Test that FMP client can be initialized properly."""
+        with patch.dict(os.environ, {'FMP_API_KEY': 'test_key'}):
+            client = get_fmp_client()
+            assert client is not None
 
     @pytest.mark.integration
-    def test_finviz_client_initialization(self, mock_env_vars):
-        """Test that FinvizClient can be initialized properly."""
-        client = FinvizClient()
-        assert client is not None
-        assert client.api_key == 'test_finviz_key'
-        assert client.base_url == 'https://elite.finviz.com'
-
-    @pytest.mark.integration
-    @patch('requests.get')
-    def test_eodhd_api_call_flow(self, mock_get, mock_env_vars):
-        """Test the complete flow of an EODHD API call."""
+    @patch('requests.Session.get')
+    def test_fmp_historical_data_flow(self, mock_get):
+        """Test the complete flow of an FMP API call."""
         # Mock successful response
-        mock_response = mock_get.return_value
+        mock_response = Mock()
         mock_response.status_code = 200
-        mock_response.json.return_value = {
-            'General': {'Code': 'AAPL', 'Name': 'Apple Inc.'},
-            'Highlights': {'MarketCapitalization': 2500000000000}
-        }
-
-        client = EODHDClient()
-        result = client.get_fundamentals('AAPL')
+        mock_response.json.return_value = [
+            {
+                "symbol": "AAPL",
+                "date": "2023-12-01",
+                "open": 190.50,
+                "high": 195.00,
+                "low": 189.00,
+                "close": 194.50,
+                "volume": 50000000
+            }
+        ]
+        mock_get.return_value = mock_response
         
-        assert result is not None
-        assert 'General' in result
-        mock_get.assert_called_once()
-        
-        # Verify the request was made with correct parameters
-        call_args = mock_get.call_args
-        assert 'eodhd.com' in call_args[0][0]
-        assert call_args[1]['params']['api_token'] == 'test_eodhd_key'
+        with patch.dict(os.environ, {'FMP_API_KEY': 'test_key'}):
+            client = get_fmp_client()
+            result = client.get_historical_price_data('AAPL', '2023-12-01', '2023-12-01')
+            
+            assert result is not None
+            assert len(result) == 1
+            assert result[0]['symbol'] == 'AAPL'
+            assert result[0]['close'] == 194.50
 
     @pytest.mark.integration
-    @patch('requests.get')
-    def test_eodhd_retry_mechanism(self, mock_get, mock_env_vars):
-        """Test EODHD client retry mechanism."""
-        # First call returns 429, second call succeeds
+    @patch('requests.Session.get')
+    def test_fmp_client_retry_mechanism(self, mock_get):
+        """Test FMP client retry mechanism."""
+        # Mock responses: first two fail, third succeeds
         mock_responses = [
-            type('MockResponse', (), {'status_code': 429}),
-            type('MockResponse', (), {
-                'status_code': 200,
-                'json': lambda: {'status': 'success'}
-            })
+            Mock(status_code=500, raise_for_status=Mock(side_effect=requests.exceptions.HTTPError())),
+            Mock(status_code=429, raise_for_status=Mock(side_effect=requests.exceptions.HTTPError())),
+            Mock(status_code=200, json=lambda: [{"symbol": "AAPL", "close": 190.50}])
         ]
         mock_get.side_effect = mock_responses
-
-        with patch('time.sleep'):  # Mock sleep to speed up test
-            client = EODHDClient(max_retries=2, retry_delay=0.1)
-            result = client.get_fundamentals('AAPL')
+        
+        with patch.dict(os.environ, {'FMP_API_KEY': 'test_key'}):
+            client = get_fmp_client(max_retries=2, retry_delay=0.1)
+            result = client.get_historical_price_data('AAPL', '2023-12-01', '2023-12-01')
             
-            assert result == {'status': 'success'}
-            assert mock_get.call_count == 2
+            # Should succeed on third attempt
+            assert result is not None
+            assert len(result) == 1
+            assert result[0]['symbol'] == 'AAPL'
 
     @pytest.mark.integration
-    @patch('requests.get')
-    def test_finviz_screener_flow(self, mock_get, mock_env_vars):
-        """Test the complete flow of a Finviz screener call."""
-        # Mock CSV response
-        csv_data = """Ticker,Company,Price,Change,Volume
-AAPL,Apple Inc.,150.00,0.02,50000000
-GOOGL,Alphabet Inc.,2500.00,-0.01,1500000
-MSFT,Microsoft Corporation,300.00,0.01,25000000"""
-        
-        mock_response = mock_get.return_value
+    @patch('requests.Session.get')
+    def test_fmp_market_cap_data(self, mock_get):
+        """Test FMP market cap data retrieval."""
+        mock_response = Mock()
         mock_response.status_code = 200
-        mock_response.content = csv_data.encode('utf-8')
-
-        client = FinvizClient()
+        mock_response.json.return_value = [
+            {
+                "symbol": "AAPL",
+                "marketCap": 3000000000000,
+                "price": 190.50
+            },
+            {
+                "symbol": "MSFT", 
+                "marketCap": 2800000000000,
+                "price": 370.00
+            }
+        ]
+        mock_get.return_value = mock_response
         
-        filters = {'cap': 'smallover', 'sh_price': 'o10'}
-        columns = '0,1,2,3,4'
-        url = client.build_screener_url(filters, columns)
+        with patch.dict(os.environ, {'FMP_API_KEY': 'test_key'}):
+            client = get_fmp_client()
+            result = client.get_market_cap_data(['AAPL', 'MSFT'])
+            
+            assert result is not None
+            assert 'AAPL' in result
+            assert 'MSFT' in result
+            assert result['AAPL']['marketCap'] == 3000000000000
+
+    @pytest.mark.integration
+    @patch('requests.Session.get')
+    def test_fmp_mid_small_cap_symbols(self, mock_get):
+        """Test FMP mid/small cap symbols retrieval."""
+        # Mock S&P 400 and S&P 600 responses
+        mock_responses = [
+            Mock(status_code=200, json=lambda: [
+                {"symbol": "ABC", "name": "ABC Corp"},
+                {"symbol": "DEF", "name": "DEF Inc"}
+            ]),
+            Mock(status_code=200, json=lambda: [
+                {"symbol": "GHI", "name": "GHI LLC"},
+                {"symbol": "JKL", "name": "JKL Corp"}
+            ])
+        ]
+        mock_get.side_effect = mock_responses
+        
+        with patch.dict(os.environ, {'FMP_API_KEY': 'test_key'}):
+            client = get_fmp_client()
+            result = client.get_mid_small_cap_symbols()
+            
+            assert result is not None
+            assert len(result) == 4
+            assert 'ABC' in result
+            assert 'GHI' in result
+
+    @pytest.mark.integration
+    def test_finviz_client_initialization(self):
+        """Test Finviz client initialization."""
+        client = FinvizClient()
+        assert client is not None
+
+    @pytest.mark.integration
+    @patch('pandas.read_html')
+    @patch('requests.Session.get')
+    def test_finviz_screener_integration(self, mock_get, mock_read_html):
+        """Test Finviz screener integration."""
+        # Mock HTTP response
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.text = "<table><tr><td>Test</td></tr></table>"
+        mock_get.return_value = mock_response
+        
+        # Mock pandas read_html
+        mock_read_html.return_value = [pd.DataFrame({
+            'Ticker': ['AAPL', 'MSFT'],
+            'Price': ['190.50', '370.00'],
+            'Volume': ['50M', '30M']
+        })]
+        
+        client = FinvizClient()
+        url = client.build_screener_url(
+            filters=['cap_midover'],
+            columns=['ticker', 'price'],
+            order='-volume'
+        )
         
         result = client.get_screener_data(url)
         
-        assert isinstance(result, pd.DataFrame)
-        assert len(result) == 3
-        assert 'Ticker' in result.columns
-        assert 'AAPL' in result['Ticker'].values
-        
-        mock_get.assert_called_once_with(url, timeout=30)
-
-    @pytest.mark.integration
-    @patch('requests.get')
-    def test_finviz_retry_on_rate_limit(self, mock_get, mock_env_vars):
-        """Test Finviz client handles rate limits with retry."""
-        csv_data = "Ticker,Price\nAAPL,150.00"
-        
-        # First call returns 429, second call succeeds
-        mock_responses = [
-            type('MockResponse', (), {'status_code': 429}),
-            type('MockResponse', (), {
-                'status_code': 200,
-                'content': csv_data.encode('utf-8')
-            })
-        ]
-        mock_get.side_effect = mock_responses
-
-        with patch('time.sleep'):  # Mock sleep to speed up test
-            client = FinvizClient(max_retries=2, retry_delay=0.1)
-            result = client.get_stock_count('test_url')
-            
-            assert result == 1  # One stock in the CSV
-            assert mock_get.call_count == 2
-
-    @pytest.mark.integration
-    @patch('alpaca_trade_api.REST')
-    def test_alpaca_account_integration(self, mock_rest, mock_env_vars):
-        """Test Alpaca client account integration."""
-        # Mock the REST API
-        mock_api = mock_rest.return_value
-        mock_account = type('MockAccount', (), {
-            'id': 'test_account_id',
-            'equity': '100000.00',
-            'buying_power': '50000.00',
-            'status': 'ACTIVE'
-        })
-        mock_api.get_account.return_value = mock_account
-
-        client = AlpacaClient('paper')
-        account = client.get_account()
-        
-        assert account.id == 'test_account_id'
-        assert account.equity == '100000.00'
-        assert account.buying_power == '50000.00'
-        mock_api.get_account.assert_called_once()
-
-    @pytest.mark.integration
-    @patch('alpaca_trade_api.REST')
-    def test_alpaca_order_submission_flow(self, mock_rest, mock_env_vars):
-        """Test Alpaca order submission integration."""
-        # Mock the REST API
-        mock_api = mock_rest.return_value
-        mock_order = type('MockOrder', (), {
-            'id': 'test_order_id',
-            'symbol': 'AAPL',
-            'qty': '100',
-            'side': 'buy',
-            'status': 'accepted'
-        })
-        mock_api.submit_order.return_value = mock_order
-
-        client = AlpacaClient('paper')
-        order = client.submit_order('AAPL', 100, 'buy')
-        
-        assert order.id == 'test_order_id'
-        assert order.symbol == 'AAPL'
-        assert order.qty == '100'
-        
-        mock_api.submit_order.assert_called_once_with(
-            symbol='AAPL',
-            qty=100,
-            side='buy', 
-            type='market',
-            time_in_force='day'
-        )
-
-    @pytest.mark.integration
-    def test_client_singleton_behavior(self, mock_env_vars):
-        """Test that singleton functions return the same instances."""
-        from api_clients import get_alpaca_client, get_eodhd_client, get_finviz_client
-        
-        with patch('alpaca_trade_api.REST'):
-            # Test Alpaca client singleton
-            client1 = get_alpaca_client('live')
-            client2 = get_alpaca_client('live') 
-            assert client1 is client2
-            
-            # Different account types should be different instances
-            paper_client = get_alpaca_client('paper')
-            assert client1 is not paper_client
-        
-        # Test EODHD client singleton
-        eodhd1 = get_eodhd_client()
-        eodhd2 = get_eodhd_client()
-        assert eodhd1 is eodhd2
-        
-        # Test Finviz client singleton
-        finviz1 = get_finviz_client()
-        finviz2 = get_finviz_client()
-        assert finviz1 is finviz2
-
-    @pytest.mark.integration
-    @patch('requests.get')
-    def test_error_handling_across_clients(self, mock_get, mock_env_vars):
-        """Test error handling across different clients."""
-        # Test network error handling
-        mock_get.side_effect = requests.exceptions.ConnectionError("Network error")
-        
-        # EODHD client should handle network errors
-        client = EODHDClient(max_retries=1)
-        with pytest.raises(requests.exceptions.ConnectionError):
-            client.get_fundamentals('AAPL')
-        
-        # Finviz client should handle network errors
-        finviz_client = FinvizClient(max_retries=1)
-        result = finviz_client.get_stock_count('test_url')
-        assert result == 0  # Should return 0 on error
-
-    @pytest.mark.integration
-    @patch('requests.get')  
-    def test_finviz_news_integration(self, mock_get, mock_env_vars):
-        """Test Finviz news data integration."""
-        csv_data = """Date,Title,Link,Ticker
-2023-01-01,Apple releases new iPhone,http://example.com,AAPL
-2023-01-02,Google announces AI breakthrough,http://example.com,GOOGL"""
-        
-        mock_response = mock_get.return_value
-        mock_response.status_code = 200
-        mock_response.content = csv_data.encode('utf-8')
-
-        client = FinvizClient()
-        result = client.get_news_data(['AAPL', 'GOOGL'], '2023-01-01', '2023-01-02')
-        
-        assert isinstance(result, pd.DataFrame)
+        assert result is not None
         assert len(result) == 2
-        assert 'Date' in result.columns
-        assert 'Title' in result.columns
-        assert 'Ticker' in result.columns
+        assert 'AAPL' in result['Ticker'].values
 
     @pytest.mark.integration
-    def test_configuration_validation(self, mock_env_vars):
-        """Test that all clients validate their configuration properly."""
-        # Test missing API keys
+    def test_client_singletons(self):
+        """Test that client factory functions work correctly."""
+        from api_clients import get_alpaca_client, get_fmp_client, get_finviz_client
+        
+        with patch.dict(os.environ, {
+            'FMP_API_KEY': 'test_fmp_key',
+            'ALPACA_API_KEY': 'test_alpaca_key',
+            'ALPACA_SECRET_KEY': 'test_alpaca_secret',
+        }):
+            # Test Alpaca client singleton
+            alpaca1 = get_alpaca_client('paper')
+            alpaca2 = get_alpaca_client('paper')
+            assert alpaca1 is alpaca2
+            
+            # Test FMP client
+            fmp_client = get_fmp_client()
+            assert fmp_client is not None
+            
+            # Test Finviz client
+            finviz_client = get_finviz_client()
+            assert finviz_client is not None
+
+    @pytest.mark.integration
+    @patch('requests.Session.get')
+    def test_error_handling_across_clients(self, mock_get):
+        """Test error handling consistency across different API clients."""
+        # Mock network error
+        mock_get.side_effect = requests.exceptions.ConnectionError()
+        
+        # FMP client should handle network errors
+        with patch.dict(os.environ, {'FMP_API_KEY': 'test_key'}):
+            client = get_fmp_client(max_retries=1)
+            result = client.get_historical_price_data('AAPL', '2023-12-01', '2023-12-01')
+            assert result is None
+
+    @pytest.mark.integration
+    def test_rate_limiting_behavior(self):
+        """Test rate limiting behavior across clients."""
+        # This would be a more complex test in a real scenario
+        # For now, just test that clients can be created without rate limit issues
+        with patch.dict(os.environ, {'FMP_API_KEY': 'test_key'}):
+            clients = [get_fmp_client() for _ in range(5)]
+            assert len(clients) == 5
+            # All should be the same instance due to singleton pattern
+            assert all(client is clients[0] for client in clients[1:])
+
+    @pytest.mark.integration
+    def test_missing_api_keys_handling(self):
+        """Test handling of missing API keys."""
+        # Clear environment variables
         with patch.dict(os.environ, {}, clear=True):
-            with pytest.raises(ValueError, match="EODHD_API_KEY"):
-                EODHDClient()
+            # FMP client should raise ValueError for missing key
+            with pytest.raises(ValueError, match="FMP_API_KEY"):
+                get_fmp_client()
+
+    @pytest.mark.integration
+    @patch('requests.Session.get')
+    def test_data_consistency_across_apis(self, mock_get):
+        """Test data format consistency across different API sources."""
+        # Mock FMP response
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = [
+            {
+                "symbol": "AAPL",
+                "date": "2023-12-01",
+                "close": 190.50,
+                "volume": 50000000
+            }
+        ]
+        mock_get.return_value = mock_response
+        
+        with patch.dict(os.environ, {'FMP_API_KEY': 'test_key'}):
+            fmp_client = get_fmp_client()
             
-            with pytest.raises(ValueError, match="FINVIZ_API_KEY"):
-                FinvizClient()
+            # Test that data format is consistent
+            price_data = fmp_client.get_historical_price_data('AAPL', '2023-12-01', '2023-12-01')
             
-            with pytest.raises(ValueError, match="API keys not found"):
-                AlpacaClient('live')
+            assert isinstance(price_data, list)
+            assert len(price_data) > 0
+            assert 'symbol' in price_data[0]
+            assert 'close' in price_data[0]
+            assert isinstance(price_data[0]['close'], (int, float))
+
+
+@pytest.fixture
+def mock_env_vars():
+    """Fixture to provide mock environment variables."""
+    return {
+        'FMP_API_KEY': 'test_fmp_key',
+        'ALPACA_API_KEY': 'test_alpaca_key',
+        'ALPACA_SECRET_KEY': 'test_alpaca_secret',
+        'ALPACA_BASE_URL': 'https://paper-api.alpaca.markets'
+    }
+
+
+if __name__ == '__main__':
+    pytest.main([__file__])

@@ -46,12 +46,12 @@ class TestEarningsSwing:
             assert len(tickers) <= 2
             assert isinstance(tickers, list)
 
-    @patch('earnings_swing.get_eodhd_client')
-    def test_get_mid_small_cap_symbols(self, mock_get_eodhd_client, mock_env_vars):
+    @patch('earnings_swing.get_fmp_client')
+    def test_get_mid_small_cap_symbols(self, mock_get_fmp_client, mock_env_vars):
         """Test getting mid and small cap symbols."""
-        # Mock the EODHD client
+        # Mock the FMP client
         mock_client = Mock()
-        mock_get_eodhd_client.return_value = mock_client
+        mock_get_fmp_client.return_value = mock_client
         
         # Mock market cap data
         mock_mid_data = {
@@ -67,7 +67,7 @@ class TestEarningsSwing:
             }
         }
         
-        mock_client.get_market_cap_data.side_effect = [mock_mid_data, mock_sml_data]
+        mock_client.get_mid_small_cap_symbols.return_value = ['AAPL', 'GOOGL', 'TSLA', 'AMD']
         
         symbols = earnings_swing.get_mid_small_cap_symbols()
         
@@ -77,13 +77,13 @@ class TestEarningsSwing:
         assert 'TSLA' in symbols
         assert 'AMD' in symbols
 
-    @patch('earnings_swing.get_eodhd_client')
-    def test_get_historical_data(self, mock_get_eodhd_client, mock_eodhd_response, mock_env_vars):
+    @patch('earnings_swing.get_fmp_client')
+    def test_get_historical_data(self, mock_get_fmp_client, mock_fmp_response, mock_env_vars):
         """Test getting historical data."""
-        # Mock the EODHD client
+        # Mock the FMP client
         mock_client = Mock()
-        mock_get_eodhd_client.return_value = mock_client
-        mock_client.get_historical_data.return_value = mock_eodhd_response
+        mock_get_fmp_client.return_value = mock_client
+        mock_client.get_historical_price_data.return_value = mock_fmp_response
         
         result = earnings_swing.get_historical_data('AAPL', '2023-01-01', '2023-01-02')
         
@@ -189,9 +189,9 @@ class TestEarningsSwing:
         assert earnings_swing.TZ_UTC == ZoneInfo('UTC')
 
     @patch('earnings_swing.get_alpaca_client')
-    @patch('earnings_swing.get_eodhd_client') 
+    @patch('earnings_swing.get_fmp_client') 
     @patch('earnings_swing.get_finviz_client')
-    def test_client_initialization(self, mock_finviz, mock_eodhd, mock_alpaca, mock_env_vars):
+    def test_client_initialization(self, mock_finviz, mock_fmp, mock_alpaca, mock_env_vars):
         """Test that all API clients are properly initialized."""
         # Import the module to trigger client initialization
         import importlib
@@ -199,5 +199,5 @@ class TestEarningsSwing:
         
         # Verify clients were called
         mock_alpaca.assert_called()
-        mock_eodhd.assert_called()
+        mock_fmp.assert_called()
         mock_finviz.assert_called()

@@ -582,7 +582,7 @@ except ConnectionError as e:
 
 #### API制限
 - **Alpaca API**: 200リクエスト/分
-- **EODHD API**: 100,000リクエスト/日
+- **FMP API**: 750リクエスト/分
 - **Finviz**: レート制限あり（自動調整）
 
 #### パフォーマンス最適化
@@ -728,9 +728,9 @@ ValueError: No data available for symbol AAPL
 #### 診断コマンド
 ```python
 # データ可用性チェック
-from api_clients import get_eodhd_client
+from api_clients import get_fmp_client
 
-client = get_eodhd_client()
+client = get_fmp_client()
 try:
     data = client.get_historical_data("AAPL.US", "2023-12-01", "2023-12-06")
     print(f"Data points: {len(data)}")

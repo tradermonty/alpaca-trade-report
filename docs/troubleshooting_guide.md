@@ -78,11 +78,11 @@ ValueError: No data available for symbol AAPL
 #### 診断コマンド
 ```python
 # データ可用性チェック
-from api_clients import get_eodhd_client
+from api_clients import get_fmp_client
 
-client = get_eodhd_client()
+client = get_fmp_client()
 try:
-    data = client.get_historical_data("AAPL.US", "2023-12-01", "2023-12-06")
+    data = client.get_historical_price_data("AAPL", "2023-12-01", "2023-12-06")
     print(f"Data points: {len(data)}")
 except Exception as e:
     print(f"Error: {e}")

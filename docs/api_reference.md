@@ -118,7 +118,7 @@ except ConnectionError as e:
 
 #### API制限
 - **Alpaca API**: 200リクエスト/分
-- **EODHD API**: 100,000リクエスト/日
+- **FMP API**: 250リクエスト/分
 - **Finviz**: レート制限あり（自動調整）
 
 #### パフォーマンス最適化

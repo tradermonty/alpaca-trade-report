@@ -13,7 +13,7 @@ test_env = os.environ.copy()
 test_env.update({
     'GOOGLE_SHEETS_CREDENTIALS_PATH': 'mock_path',
     'GMAIL_APP_PASSWORD': 'mock_password',
-    'EODHD_API_KEY': 'mock_key',
+    'FMP_API_KEY': 'mock_key',
     'FINVIZ_API_KEY': 'mock_key',
     'ALPACA_API_KEY_LIVE': 'mock_key',
     'ALPACA_SECRET_KEY_LIVE': 'mock_secret',

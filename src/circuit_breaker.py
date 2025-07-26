@@ -174,7 +174,7 @@ class CircuitBreakerOpenException(Exception):
 
 # グローバルサーキットブレーカーインスタンス
 alpaca_circuit_breaker = CircuitBreaker(name="AlpacaAPI")
-eodhd_circuit_breaker = CircuitBreaker(name="EODHDAPI")
+fmp_circuit_breaker = CircuitBreaker(name="FMPAPI")
 finviz_circuit_breaker = CircuitBreaker(name="FinvizAPI")
 
 
@@ -182,7 +182,7 @@ def get_circuit_breaker(api_name: str) -> CircuitBreaker:
     """API名に基づいてサーキットブレーカーを取得"""
     circuit_breakers = {
         'alpaca': alpaca_circuit_breaker,
-        'eodhd': eodhd_circuit_breaker,
+        'fmp': fmp_circuit_breaker,
         'finviz': finviz_circuit_breaker,
     }
     
@@ -193,6 +193,6 @@ def get_all_circuit_breaker_status() -> list:
     """すべてのサーキットブレーカーの状態を取得"""
     return [
         alpaca_circuit_breaker.get_status(),
-        eodhd_circuit_breaker.get_status(),
+        fmp_circuit_breaker.get_status(),
         finviz_circuit_breaker.get_status(),
     ]

@@ -56,7 +56,7 @@ class TestConfigClasses(unittest.TestCase):
         config = RetryConfig()
         
         self.assertEqual(config.ALPACA_MAX_RETRIES, 3)
-        self.assertEqual(config.EODHD_MAX_RETRIES, 3)
+        self.assertEqual(config.FMP_MAX_RETRIES, 3)
         self.assertEqual(config.FINVIZ_MAX_RETRIES, 5)
         self.assertEqual(config.HTTP_TIMEOUT, 30)
         self.assertEqual(config.CIRCUIT_BREAKER_FAILURE_THRESHOLD, 5)

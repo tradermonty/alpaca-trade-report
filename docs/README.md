@@ -22,7 +22,7 @@
 ### 3. [API統合システム](./api_integration_documentation.md)
 - **4つの外部APIの統合**と信頼性保証
 - **Alpaca Trading API**: 取引執行・アカウント管理
-- **EODHD API**: 市場データ・企業基本情報
+- **Financial Modeling Prep (FMP) API**: 市場データ・企業基本情報
 - **Finviz Elite API**: 高度な株式スクリーニング
 - **Google Sheets API**: 外部制御・監視機能
 
@@ -71,7 +71,7 @@
 
 ### 必要なAPIアクセス
 1. **Alpaca Trading Account** (Live + Paper)
-2. **EODHD Premium Subscription**
+2. **Financial Modeling Prep (FMP) Subscription**
 3. **Finviz Elite Membership**  
 4. **Google Cloud Platform Account**
 
@@ -84,7 +84,7 @@ ALPACA_API_KEY_PAPER=your_paper_key
 ALPACA_SECRET_KEY_PAPER=your_paper_secret
 
 # Data Providers
-EODHD_API_KEY=your_eodhd_key
+FMP_API_KEY=your_fmp_key
 FINVIZ_API_KEY=your_finviz_key
 
 # External Services

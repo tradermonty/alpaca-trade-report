@@ -212,10 +212,10 @@ class TestStateManager(unittest.TestCase):
         self.assertEqual(alpaca_health['alpaca'], 'healthy')
         
         # 複数API状態更新
-        self.state_manager.update_api_health('eodhd', 'unhealthy')
+        self.state_manager.update_api_health('fmp', 'unhealthy')
         all_health = self.state_manager.get_api_health()
         self.assertEqual(all_health['alpaca'], 'healthy')
-        self.assertEqual(all_health['eodhd'], 'unhealthy')
+        self.assertEqual(all_health['fmp'], 'unhealthy')
     
     def test_emergency_stop(self):
         """緊急停止のテスト"""

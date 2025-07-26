@@ -44,7 +44,7 @@ def mock_env_vars():
         'ALPACA_API_KEY_PAPER_SHORT': 'test_paper_short_key',
         'ALPACA_SECRET_KEY_PAPER_SHORT': 'test_paper_short_secret',
         'FINVIZ_API_KEY': 'test_finviz_key',
-        'EODHD_API_KEY': 'test_eodhd_key',
+        'FMP_API_KEY': 'test_fmp_key',
         'OPENAI_API_KEY': 'test_openai_key',
         'ALPHA_VANTAGE_API_KEY': 'test_alpha_vantage_key',
         'GMAIL_PASSWORD': 'test_gmail_password'
@@ -93,8 +93,8 @@ def mock_finviz_response():
     })
 
 @pytest.fixture
-def mock_eodhd_response():
-    """Mock EODHD API response."""
+def mock_fmp_response():
+    """Mock FMP API response."""
     return [
         {
             'date': '2023-01-01',

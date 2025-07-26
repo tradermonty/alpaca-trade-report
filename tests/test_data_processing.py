@@ -344,10 +344,10 @@ class TestMarketDataProcessing(unittest.TestCase):
 class TestDataProcessingIntegration(unittest.TestCase):
     """データ処理統合テスト"""
     
-    @patch('api_clients.get_eodhd_client')
+    @patch('api_clients.get_fmp_client')
     def test_full_data_pipeline(self, mock_get_client):
         """完全なデータパイプラインのテスト"""
-        # モックEODHDクライアント
+        # モックFMPクライアント
         mock_client = Mock()
         mock_get_client.return_value = mock_client
         
@@ -361,10 +361,10 @@ class TestDataProcessingIntegration(unittest.TestCase):
             'Volume': [1000000, 1200000]
         })
         
-        mock_client.get_historical_data.return_value = sample_data
+        mock_client.get_historical_price_data.return_value = sample_data
         
         # データパイプラインの実行をシミュレート
-        raw_data = mock_client.get_historical_data('AAPL.US', '2024-01-01', '2024-01-02')
+        raw_data = mock_client.get_historical_price_data('AAPL', '2024-01-01', '2024-01-02')
         
         # データ変換
         processed_data = raw_data.copy()

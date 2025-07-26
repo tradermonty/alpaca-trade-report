@@ -28,7 +28,7 @@ EARNINGS_FILTERS = {
 ```
 
 ##### エントリー・エグジット戦略
-1. **中小型株フィルタ**: EODHD APIでMid/Small Capインデックス銘柄のみ対象
+1. **中小型株フィルタ**: FMP APIでMid/Small Capインデックス銘柄のみ対象
 2. **除外銘柄**: 高配当株リスト（dividend_portfolio_management.py）は除外
 3. **ポジションサイジング**: 
    - 戦略配分: ポートフォリオの20% (strategy_allocation.py)
@@ -310,7 +310,7 @@ STRATEGY_ALLOCATION = {
 
 #### データプロバイダー
 1. **Alpaca Trading API**: 取引執行・アカウント情報
-2. **EODHD API**: 市場データ・企業基本情報
+2. **FMP API**: 市場データ・企業基本情報
 3. **Finviz Elite API**: スクリーニング・市場分析
 4. **Google Sheets API**: 手動指示・監視データ
 
@@ -393,7 +393,7 @@ ALPACA_API_KEY_PAPER=your_paper_key
 ALPACA_SECRET_KEY_PAPER=your_paper_secret
 
 # データプロバイダー
-EODHD_API_KEY=your_eodhd_key
+FMP_API_KEY=your_fmp_key
 FINVIZ_API_KEY=your_finviz_key
 
 # Google Services

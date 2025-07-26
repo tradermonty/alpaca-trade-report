@@ -16,9 +16,9 @@ class TestTradingWorkflow:
 
     @pytest.mark.integration
     @patch('earnings_swing.get_finviz_client')
-    @patch('earnings_swing.get_eodhd_client')
+    @patch('earnings_swing.get_fmp_client')
     @patch('earnings_swing.get_alpaca_client')
-    def test_earnings_swing_complete_flow(self, mock_alpaca, mock_eodhd, mock_finviz, mock_env_vars):
+    def test_earnings_swing_complete_flow(self, mock_alpaca, mock_fmp, mock_finviz, mock_env_vars):
         """Test complete earnings swing trading workflow."""
         import earnings_swing
         
@@ -39,10 +39,10 @@ class TestTradingWorkflow:
         mock_finviz_client.build_screener_url.return_value = 'test_screener_url'
         mock_finviz_client.get_screener_data.return_value = mock_df
         
-        # Mock EODHD client for market cap data
-        mock_eodhd_client = Mock()
-        mock_eodhd.return_value = mock_eodhd_client
-        mock_eodhd_client.get_market_cap_data.side_effect = [
+        # Mock FMP client for market cap data
+        mock_fmp_client = Mock()
+        mock_fmp.return_value = mock_fmp_client
+        mock_fmp_client.get_market_cap_data.side_effect = [
             {'Components': {'AAPL': {'Code': 'AAPL.US'}, 'GOOGL': {'Code': 'GOOGL.US'}}},
             {'Components': {'MSFT': {'Code': 'MSFT.US'}}}
         ]
@@ -66,7 +66,7 @@ class TestTradingWorkflow:
         # Verify that all components were called
         mock_finviz_client.build_screener_url.assert_called()
         mock_finviz_client.get_screener_data.assert_called()
-        mock_eodhd_client.get_market_cap_data.assert_called()
+        mock_fmp_client.get_market_cap_data.assert_called()
 
     @pytest.mark.integration
     @patch('uptrend_stocks.get_finviz_client')

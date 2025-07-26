@@ -18,7 +18,7 @@ logger = get_logger(__name__)
 import dividend_portfolio_management
 import strategy_allocation
 import risk_management
-from api_clients import get_alpaca_client, get_eodhd_client, get_finviz_client
+from api_clients import get_alpaca_client, get_fmp_client, get_finviz_client
 
 load_dotenv()
 
@@ -34,7 +34,7 @@ ALPACA_ACCOUNT = ACCOUNT.get_account_type()
 
 # API クライアント初期化
 alpaca_client = get_alpaca_client(ALPACA_ACCOUNT)
-eodhd_client = get_eodhd_client()
+fmp_client = get_fmp_client()
 finviz_client = get_finviz_client()
 
 if ALPACA_ACCOUNT == 'live':
@@ -44,7 +44,7 @@ else:
 
 # API クライアントの初期化
 alpaca_client = get_alpaca_client(ALPACA_ACCOUNT)
-eodhd_client = get_eodhd_client()
+fmp_client = get_fmp_client()
 finviz_client = get_finviz_client()
 api = alpaca_client.api  # 後方互換性のため
 
@@ -287,72 +287,43 @@ def swing_earnings_stocks():
 
 
 def get_mid_small_cap_symbols() -> List[str]:
-    """EODHDのAPIを使用してS&P 400とS&P 600の銘柄リストを取得"""
+    """FMP API を使用して中型・小型株（S&P400/600相当）の銘柄リストを取得"""
     try:
-        # S&P 400 (MID)の取得
-        mid_data = eodhd_client.get_market_cap_data('MID.INDX')
-
-        # S&P 600 (SML)の取得
-        sml_data = eodhd_client.get_market_cap_data('SML.INDX')
-
-        # 構成銘柄の抽出と結合
-        symbols = []
-
-        # MIDの構成銘柄を追加
-        if 'Components' in mid_data:
-            for component in mid_data['Components'].values():
-                symbols.append(component['Code'].replace('.US', ''))
-
-        # SMLの構成銘柄を追加
-        if 'Components' in sml_data:
-            for component in sml_data['Components'].values():
-                symbols.append(component['Code'].replace('.US', ''))
-
+        symbols = fmp_client.get_mid_small_cap_symbols()
         if not symbols:
             raise ValueError("中型・小型株の銘柄リストを取得できませんでした")
-
         logger.info(f"取得した中型・小型株銘柄数: {len(symbols)}")
         return symbols
-
     except Exception as e:
         logger.error(f"中型・小型株銘柄リストの取得に失敗: {str(e)}", exc_info=True)
         raise
 
+
 def get_historical_data(symbol: str, start_date: str, end_date: str) -> Optional[pd.DataFrame]:
-    """EODHDから株価データを取得"""
-    # 銘柄名のピリオドをハイフンに置換（例：BRK.B → BRK-B）
-    api_symbol = symbol.replace('.', '-')
-    logger.debug(f"データ取得開始: {symbol} (API用シンボル: {api_symbol})")
-
+    """FMP から株価データを取得"""
+    logger.debug(f"データ取得開始: {symbol}")
     try:
-        data = eodhd_client.get_historical_data(f"{api_symbol}.US", start_date, end_date)
-        if data:
-            df = pd.DataFrame(data)
-            df['date'] = pd.to_datetime(df['date'])
-            df.set_index('date', inplace=True)
+        raw = fmp_client.get_historical_price_data(symbol, start_date, end_date)
+        if not raw:
+            return None
 
-            # 調整済み株価を使用
-            df.rename(columns={
-                'adjusted_close': 'Close',
-                'open': 'Open',
-                'high': 'High',
-                'low': 'Low',
-                'volume': 'Volume'
-            }, inplace=True)
+        df = pd.DataFrame(raw)
+        if 'date' not in df.columns:
+            return None
 
-            # 調整済みの始値、高値、安値を計算
-            adj_ratio = df['Close'] / df['close']
-            df['Open'] = df['Open'] * adj_ratio
-            df['High'] = df['High'] * adj_ratio
-            df['Low'] = df['Low'] * adj_ratio
+        df['date'] = pd.to_datetime(df['date'])
+        df.set_index('date', inplace=True)
 
-            # 不要なカラムを削除
-            df = df.drop(['close'], axis=1)
+        # 列名を統一
+        df.rename(columns={
+            'close': 'Close',
+            'open': 'Open',
+            'high': 'High',
+            'low': 'Low',
+            'volume': 'Volume'
+        }, inplace=True)
 
-            return df
-
-        return None
-
+        return df
     except Exception as e:
         logger.error(f"株価データの取得に失敗: {symbol}, {str(e)}", exc_info=True)
         return None

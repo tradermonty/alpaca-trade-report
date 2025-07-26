@@ -14,7 +14,7 @@ The system uses environment variables for API keys stored in `.env` file:
 - Finviz Elite API key
 - OpenAI API key  
 - Alpha Vantage API key
-- EODHD API key
+- FMP API key
 
 ## Core Architecture
 
@@ -55,7 +55,7 @@ The system supports multiple trading modes via `ALPACA_ACCOUNT` variable:
 - **Finviz Elite**: Stock screening with retry logic (`FINVIZ_MAX_RETRIES`, `FINVIZ_RETRY_WAIT`)
 - **Google Sheets**: Manual trade commands via `config/spreadsheetautomation-*.json`
 - **Alpaca API**: Market data, trade execution, account information
-- **EODHD**: Market cap data for filtering
+- **Financial Modeling Prep (FMP)**: Market cap data, historical prices, index constituents
 
 ## Key Execution Patterns
 
@@ -120,13 +120,13 @@ alpaca_client = get_alpaca_client('paper_short')  # Short trading
 api = alpaca_client.api
 ```
 
-**EODHDClient Usage:**
+**FMPClient Usage:**
 ```python  
-from src.api_clients import get_eodhd_client
+from src.api_clients import get_fmp_client
 
-eodhd_client = get_eodhd_client()
-market_data = eodhd_client.get_market_cap_data('MID.INDX')
-historical_data = eodhd_client.get_historical_data('AAPL.US', '2024-01-01', '2024-12-31')
+fmp_client = get_fmp_client()
+market_data = fmp_client.get_market_cap_data(['AAPL', 'MSFT'])
+historical_data = fmp_client.get_historical_price_data('AAPL', '2024-01-01', '2024-12-31')
 ```
 
 **Benefits:**
@@ -141,7 +141,7 @@ historical_data = eodhd_client.get_historical_data('AAPL.US', '2024-01-01', '202
 - `gspread` + `oauth2client` - Google Sheets integration  
 - `python-dotenv` - Environment variable management
 - `pandas` - Data manipulation
-- `requests` - API calls to external services (wrapped by EODHDClient)
+- `requests` - API calls to external services (wrapped by FMPClient)
 - `openai` - AI-powered news analysis
 
 ## Trading Schedule

@@ -85,9 +85,11 @@ class RetryConfig:
     ALPACA_MAX_RETRIES: int = 3  # Alpaca APIの最大リトライ回数
     ALPACA_RETRY_DELAY: float = 1.0  # Alpaca APIのリトライ間隔（秒）
     
-    EODHD_MAX_RETRIES: int = 3  # EODHD APIの最大リトライ回数
-    EODHD_RETRY_DELAY: float = 1.0  # EODHD APIのリトライ間隔（秒）
-    
+    # --- FMP API ---
+    FMP_MAX_RETRIES: int = 3  # FMP APIの最大リトライ回数
+    FMP_RETRY_DELAY: float = 1.0  # FMP APIのリトライ間隔（秒）
+
+    # --- Finviz API ---
     FINVIZ_MAX_RETRIES: int = 5  # Finviz APIの最大リトライ回数
     FINVIZ_RETRY_DELAY: float = 1.0  # Finviz APIのリトライ間隔（秒）
     

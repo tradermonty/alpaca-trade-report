@@ -1,6 +1,7 @@
 """
 API呼び出しを共通化するクライアントクラス
-AlpacaとEODHDのAPI呼び出しを統一し、エラーハンドリングとリトライロジックを提供
+Alpaca と Finviz、そして FMP の API 呼び出しを統一し、
+エラーハンドリングとリトライロジックを提供する。
 """
 
 import os
@@ -19,6 +20,7 @@ from config import retry_config, system_config
 from circuit_breaker import get_circuit_breaker, CircuitBreakerOpenException
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+from fmp_data_fetcher import FMPDataFetcher  # NEW IMPORT
 
 logger = get_logger(__name__)
 
@@ -163,229 +165,6 @@ class AlpacaClient:
     def close_position(self, symbol: str, qty: str = None, percentage: str = None):
         """ポジションをクローズ"""
         return self._execute_with_retry(self._api.close_position, f'close_position for {symbol}', symbol, qty=qty, percentage=percentage)
-
-
-class EODHDClient:
-    """EODHD APIの共通クライアント（コネクションプーリング付き）"""
-    
-    def __init__(self, max_retries: int = retry_config.EODHD_MAX_RETRIES, retry_delay: float = retry_config.EODHD_RETRY_DELAY):
-        """
-        Args:
-            max_retries: 最大リトライ回数
-            retry_delay: リトライ間隔（秒）
-        """
-        self.api_key = os.getenv('EODHD_API_KEY')
-        if not self.api_key:
-            raise ValueError("EODHD_API_KEY not found in environment variables")
-        
-        self.base_url = 'https://eodhd.com/api'
-        self.max_retries = max_retries
-        self.retry_delay = retry_delay
-        self.circuit_breaker = get_circuit_breaker('eodhd')
-        
-        # セッションプールの設定
-        self.session = self._create_session_with_pool()
-        
-        logger.info("EODHD API client initialized with connection pooling")
-    
-    def _create_session_with_pool(self) -> requests.Session:
-        """
-        コネクションプーリング付きのセッションを作成
-        
-        Returns:
-            requests.Session: 設定済みセッション
-        """
-        session = requests.Session()
-        
-        # リトライ戦略の設定
-        retry_strategy = Retry(
-            total=self.max_retries,
-            status_forcelist=[429, 500, 502, 503, 504],
-            method_whitelist=["HEAD", "GET", "OPTIONS"],
-            backoff_factor=1,
-            raise_on_status=False
-        )
-        
-        # HTTPアダプターにコネクションプールを設定
-        adapter = HTTPAdapter(
-            max_retries=retry_strategy,
-            pool_connections=system_config.CONNECTION_POOL_SIZE,  # プールサイズ
-            pool_maxsize=system_config.CONNECTION_POOL_MAXSIZE,   # 最大コネクション数
-            pool_block=True  # プールが満杯の時にブロック
-        )
-        
-        session.mount("http://", adapter)
-        session.mount("https://", adapter)
-        
-        # タイムアウト設定
-        session.timeout = retry_config.HTTP_TIMEOUT
-        
-        return session
-    
-    def _make_request(self, endpoint: str, params: Dict[str, Any] = None) -> Dict[str, Any]:
-        """
-        APIリクエストを実行（リトライロジック付き）
-        
-        Args:
-            endpoint: APIエンドポイント
-            params: リクエストパラメータ
-            
-        Returns:
-            APIレスポンスのJSONデータ
-        """
-        try:
-            return self.circuit_breaker.call(self._make_request_with_retry, endpoint, params)
-        except CircuitBreakerOpenException as e:
-            logger.error(f"EODHD API circuit breaker is open for {endpoint}: {e}")
-            raise
-    
-    def _make_request_with_retry(self, endpoint: str, params: Dict[str, Any] = None) -> Dict[str, Any]:
-        """セッションプールを使用してリトライロジック付きでリクエストを実行"""
-        if params is None:
-            params = {}
-        
-        params['api_token'] = self.api_key
-        params['fmt'] = 'json'
-        
-        url = f"{self.base_url}/{endpoint}"
-        
-        for attempt in range(self.max_retries + 1):
-            try:
-                # セッションプールを使用してリクエスト実行
-                response = self.session.get(url, params=params, timeout=retry_config.HTTP_TIMEOUT)
-                
-                if response.status_code == system_config.SUCCESS_STATUS_CODE:
-                    return response.json()
-                elif response.status_code == system_config.RATE_LIMIT_STATUS_CODE:  # Rate limit
-                    if attempt < self.max_retries:
-                        wait_time = self.retry_delay * (system_config.EXPONENTIAL_BACKOFF_BASE ** attempt)
-                        logger.warning(f"Rate limit hit, waiting {wait_time}s before retry {attempt + 1}")
-                        time.sleep(wait_time)
-                        continue
-                    else:
-                        raise requests.exceptions.RequestException(f"Rate limit exceeded after {self.max_retries} retries")
-                else:
-                    response.raise_for_status()
-                    
-            except requests.exceptions.RequestException as e:
-                if attempt < self.max_retries:
-                    wait_time = self.retry_delay * (system_config.EXPONENTIAL_BACKOFF_BASE ** attempt)
-                    logger.warning(f"Request failed (attempt {attempt + 1}): {e}, retrying in {wait_time}s")
-                    time.sleep(wait_time)
-                else:
-                    logger.error(f"Request failed after {self.max_retries + 1} attempts: {e}")
-                    raise
-        
-        raise requests.exceptions.RequestException(f"Request failed after {self.max_retries + 1} attempts")
-    
-    def close(self):
-        """セッションとコネクションプールをクリーンアップ"""
-        if hasattr(self, 'session'):
-            self.session.close()
-            logger.info("EODHD client session closed")
-    
-    def __enter__(self):
-        """コンテキストマネージャーのエントリー"""
-        return self
-    
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        """コンテキストマネージャーの終了処理"""
-        self.close()
-    
-    def get_fundamentals(self, symbol: str) -> Dict[str, Any]:
-        """
-        基本データを取得
-        
-        Args:
-            symbol: 銘柄シンボル
-            
-        Returns:
-            基本データ
-        """
-        try:
-            endpoint = f"fundamentals/{symbol}"
-            return self._make_request(endpoint)
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Network error getting fundamentals for {symbol}: {e}", exc_info=True)
-            raise
-        except ValueError as e:
-            logger.error(f"Invalid response format for {symbol}: {e}", exc_info=True)
-            raise
-        except Exception as e:
-            logger.error(f"Unexpected error getting fundamentals for {symbol}: {e}", exc_info=True)
-            raise
-    
-    def get_market_cap_data(self, index_symbol: str) -> Dict[str, Any]:
-        """
-        市場指数の時価総額データを取得
-        
-        Args:
-            index_symbol: 指数シンボル (例: 'MID.INDX', 'SML.INDX')
-            
-        Returns:
-            時価総額データ
-        """
-        try:
-            endpoint = f"fundamentals/{index_symbol}"
-            return self._make_request(endpoint)
-        except Exception as e:
-            logger.error(f"Error getting market cap data for {index_symbol}: {e}")
-            raise
-    
-    def get_earnings_data(self, symbol: str, from_date: str = None, to_date: str = None) -> List[Dict[str, Any]]:
-        """
-        決算データを取得
-        
-        Args:
-            symbol: 銘柄シンボル
-            from_date: 開始日 (YYYY-MM-DD)
-            to_date: 終了日 (YYYY-MM-DD)
-            
-        Returns:
-            決算データのリスト
-        """
-        try:
-            params = {}
-            if from_date:
-                params['from'] = from_date
-            if to_date:
-                params['to'] = to_date
-            
-            endpoint = f"calendar/earnings"
-            params['symbols'] = symbol
-            
-            response = self._make_request(endpoint, params)
-            return response if isinstance(response, list) else [response]
-        except Exception as e:
-            logger.error(f"Error getting earnings data for {symbol}: {e}")
-            raise
-    
-    def get_historical_data(self, symbol: str, from_date: str, to_date: str, period: str = 'd') -> List[Dict[str, Any]]:
-        """
-        履歴データを取得
-        
-        Args:
-            symbol: 銘柄シンボル
-            from_date: 開始日 (YYYY-MM-DD)
-            to_date: 終了日 (YYYY-MM-DD)  
-            period: 期間 ('d': 日次, 'w': 週次, 'm': 月次)
-            
-        Returns:
-            履歴データのリスト
-        """
-        try:
-            params = {
-                'from': from_date,
-                'to': to_date,
-                'period': period
-            }
-            
-            endpoint = f"eod/{symbol}"
-            response = self._make_request(endpoint, params)
-            return response if isinstance(response, list) else [response]
-        except Exception as e:
-            logger.error(f"Error getting historical data for {symbol}: {e}")
-            raise
 
 
 class FinvizClient:
@@ -662,8 +441,8 @@ class FinvizClient:
 
 # シングルトンインスタンス（オプション）
 _alpaca_clients = {}
-_eodhd_client = None
 _finviz_client = None
+_fmp_client = None
 
 
 def get_alpaca_client(account_type: str = 'live') -> AlpacaClient:
@@ -674,17 +453,20 @@ def get_alpaca_client(account_type: str = 'live') -> AlpacaClient:
     return _alpaca_clients[account_type]
 
 
-def get_eodhd_client() -> EODHDClient:
-    """EODHDクライアントのシングルトンインスタンスを取得"""
-    global _eodhd_client
-    if _eodhd_client is None:
-        _eodhd_client = EODHDClient()
-    return _eodhd_client
-
-
 def get_finviz_client() -> FinvizClient:
     """Finvizクライアントのシングルトンインスタンスを取得"""
     global _finviz_client
     if _finviz_client is None:
         _finviz_client = FinvizClient()
     return _finviz_client
+
+# --- FMP CLIENT SINGLETON ---
+_fmp_client = None
+
+def get_fmp_client() -> FMPDataFetcher:
+    """FMPデータフェッチャのシングルトンインスタンスを取得"""
+    global _fmp_client
+    if _fmp_client is None:
+        _fmp_client = FMPDataFetcher()
+    return _fmp_client
+
