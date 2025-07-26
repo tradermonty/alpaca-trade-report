@@ -121,17 +121,36 @@ class ORBAdapter(TradingInterface, OrderManagementInterface,
         return self._orb_module
     
     def is_uptrend(self, symbol: str) -> bool:
-        """単純に短期EMA>長期EMA でアップトレンド判定"""
+        """5-minute EMA10/EMA20 を用いたアップトレンド判定
+
+        条件:
+        1. 最新終値 > EMA10
+        2. EMA10 > EMA20
+        3. EMA10 が上昇中（直近2本の差分 >= 0）
+        """
         try:
-            bars = self._alpaca.get_bars(symbol, TimeFrame(15, TimeFrameUnit.Minute), limit=200)
+            bars = self._alpaca.get_bars(symbol, TimeFrame(5, TimeFrameUnit.Minute), limit=120)
             if hasattr(bars, 'df'):
                 bars = bars.df
-            if len(bars) < 100:
+            # データ不足なら判定不可 → true (安全側で許可)
+            if len(bars) < 30:
                 return True
+
             bars['ema_short'] = bars['close'].ewm(span=10).mean()
             bars['ema_long'] = bars['close'].ewm(span=20).mean()
-            return bool(bars['ema_short'].iloc[-1] > bars['ema_long'].iloc[-1])
+
+            ema_short_latest = bars['ema_short'].iloc[-1]
+            ema_short_prev = bars['ema_short'].iloc[-2]
+            ema_long_latest = bars['ema_long'].iloc[-1]
+            price_latest = bars['close'].iloc[-1]
+
+            is_price_above = price_latest > ema_short_latest
+            is_ema_cross = ema_short_latest > ema_long_latest
+            is_ema_rising = (ema_short_latest - ema_short_prev) >= 0
+
+            return bool(is_price_above and is_ema_cross and is_ema_rising)
         except Exception:
+            # 取得失敗時は false にするとエントリーが一切できない恐れがあるため true
             return True
     
     def is_above_ema(self, symbol: str) -> bool:

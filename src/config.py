@@ -113,6 +113,9 @@ class RiskManagementConfig:
     PNL_CRITERIA: float = -0.06  # P&L基準 -6%
     PNL_CHECK_PERIOD: int = 30  # P&L確認期間（日）
     PNL_HISTORY_MULTIPLIER: int = 3  # 取引履歴取得期間の乗数
+
+    # レバレッジ制御
+    MAX_SWING_LEVERAGE: float = 1.5  # スイング許容最大レバレッジ（1.5倍）
     
     # ログファイル設定
     PNL_LOG_FILE: str = '../pnl_log.json'

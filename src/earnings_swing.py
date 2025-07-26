@@ -18,6 +18,7 @@ logger = get_logger(__name__)
 import dividend_portfolio_management
 import strategy_allocation
 import risk_management
+from config import risk_config
 from api_clients import get_alpaca_client, get_fmp_client, get_finviz_client
 
 load_dotenv()
@@ -47,6 +48,28 @@ alpaca_client = get_alpaca_client(ALPACA_ACCOUNT)
 fmp_client = get_fmp_client()
 finviz_client = get_finviz_client()
 api = alpaca_client.api  # 後方互換性のため
+
+
+# -------------------------------------------------------------
+# レバレッジ計算ヘルパー
+# -------------------------------------------------------------
+
+
+def _get_effective_leverage(account) -> float:
+    """Alpaca Account オブジェクトから実効レバレッジを計算"""
+    try:
+        equity = float(account.equity)
+        buying_power = float(account.buying_power)
+        # 一般的に buying_power = equity * 2 まで増える（RegT 2倍）
+        # 実効レバレッジ = 有効建玉 / 自己資本 と近似
+        # 保守的に equity / (equity - buying_power) を用いる
+        denominator = equity - buying_power
+        if denominator <= 0:
+            return float('inf')
+        return equity / denominator
+    except Exception as e:
+        logger.warning(f"leverage calculation failed: {e}")
+        return 1.0  # 計算できない場合は安全側
 
 # SCREENER: 基本情報フィルター
 # - 決算日 (Earnings Date): 昨日の引け後または本日の寄り付き前
@@ -228,6 +251,25 @@ def sleep_until_open(time_to_minutes=timing_config.DEFAULT_MINUTES_TO_OPEN):
 def swing_earnings_stocks():
     process = {}
 
+    # ---------------------------------------------------------
+    # レバレッジチェック：高レバの場合はスイングをスキップ
+    # ---------------------------------------------------------
+
+    try:
+        account_info = alpaca_client.get_account()
+        leverage = _get_effective_leverage(account_info)
+        logger.info(f"Current effective leverage: {leverage:.2f}x")
+        swing_trade_mode = True
+        if leverage > risk_config.MAX_SWING_LEVERAGE:
+            swing_trade_mode = False
+            logger.warning(
+                f"Leverage {leverage:.2f} exceeds threshold {risk_config.MAX_SWING_LEVERAGE}. "
+                "Switching to DAY-TRADE mode (no overnight positions)."
+            )
+    except Exception as e:
+        logger.error(f"Leverage check failed: {e}")
+        swing_trade_mode = True  # 安全側でスイング継続
+
     if not risk_management.check_pnl_criteria():
         logger.warning('recent trading pnl is below criteria. exit trading.')
         return
@@ -273,7 +315,7 @@ def swing_earnings_stocks():
                     trade_file=TRADE_PY_FILE,
                     position_size=size,
                     max_concurrent=system_config.MAX_CONCURRENT_TRADES,
-                    swing=True,
+                    swing=swing_trade_mode,
                     range_val=0,
                     dynamic_rate=False,
                     ema_trail=False

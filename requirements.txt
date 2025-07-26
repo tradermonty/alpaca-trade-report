@@ -5,9 +5,9 @@ aiohttp>=3.8.0
 
 # Data Analysis and Processing
 pandas>=2.0.0
-numpy>=1.24.0
+numpy>=1.24.0,<2.0.0  # Compatible with pandas-ta
 pandas-ta>=0.3.14b0
-talib>=0.4.19
+talib>=0.4.19  # Requires: brew install ta-lib
 scipy>=1.11.0
 
 # Web Scraping and HTML Processing
@@ -27,16 +27,26 @@ python-dotenv>=1.0.0
 pytz>=2023.3
 
 # Network and HTTP
-urllib3>=2.0.0
+urllib3>=1.25.0,<2.0.0  # Compatible with alpaca-trade-api
 
 # System and Process Monitoring
 psutil>=5.9.0
 
 # Data Visualization
 matplotlib>=3.7.0
+plotly>=5.0.0
 
 # Concurrency and Threading
 # (Built-in modules: asyncio, threading, concurrent.futures)
+
+# Database (for trade logging)
+# sqlite3 is built-in to Python
+
+# XML/JSON Processing (built-in)
+# json, xml.etree.ElementTree are built-in
+
+# Email and SMTP (if notifications needed)
+# smtplib, email are built-in
 
 # Development and Testing Dependencies (optional)
 pytest>=7.4.0

@@ -26,6 +26,9 @@ class TradingConfig:
     profit_rate_1: float = 0.02
     profit_rate_2: float = 0.04
     profit_rate_3: float = 0.08
+
+    # Entry limit offset (percentage, e.g. 0.006 = 0.6%)
+    limit_rate: float = 0.006
     
     # Risk management
     slippage_rate: float = 0.001
@@ -178,6 +181,9 @@ class ORBConfiguration:
         
         if os.getenv('ORB_PROFIT_RATE_1'):
             self._trading.profit_rate_1 = float(os.getenv('ORB_PROFIT_RATE_1'))
+
+        if os.getenv('ORB_LIMIT_RATE'):
+            self._trading.limit_rate = float(os.getenv('ORB_LIMIT_RATE'))
         
         # Market config from environment
         if os.getenv('ORB_OPENING_RANGE_DEFAULT'):

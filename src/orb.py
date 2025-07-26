@@ -30,7 +30,7 @@ logger = get_logger(__name__)
 class TradingParameters:
     """取引パラメータを管理するデータクラス"""
     symbol: str
-    position_size: float
+    position_value: float  # USD amount per trade
     opening_range: int
     is_swing: bool
     dynamic_rate: bool
@@ -52,15 +52,15 @@ class OrderState:
     last_trail_price: float = 0.0
 
 
-class PositionSizeCalculator:
-    """ポジションサイズ計算クラス"""
+class TradeValueCalculator:
+    """トレードごとの使用金額 (USD) を計算するユーティリティ"""
     
     def __init__(self, adapter: ORBAdapter):
         self.adapter = adapter
     
-    def calculate_position_size(self, pos_size_arg: str, config: ORBConfiguration) -> float:
-        """ポジションサイズを計算"""
-        if pos_size_arg == 'auto':
+    def calculate_trade_value(self, pos_value_arg: str, config: ORBConfiguration) -> float:
+        """1回のトレードで使用するUSD金額を計算"""
+        if pos_value_arg == 'auto':
             # アカウント情報を取得
             positions = self.adapter.get_positions()
             portfolio_value = sum(float(pos.get('market_value', 0)) for pos in positions)
@@ -68,7 +68,8 @@ class PositionSizeCalculator:
             # 設定から計算ロジックを取得
             return (portfolio_value * config.trading.position_size_rate / 
                    (18 * config.trading.position_divider))
-        return float(pos_size_arg)
+        else:
+            return float(pos_value_arg)
 
 
 class MarketSession:
@@ -126,7 +127,7 @@ class TradingEngine:
     def __init__(self, params: TradingParameters):
         self.params = params
         self.adapter = ORBAdapter()
-        self.position_calculator = PositionSizeCalculator(self.adapter)
+        self.position_calculator = TradeValueCalculator(self.adapter)
         self.market_session = MarketSession(params, self.adapter)
         self.order_state = OrderState()
         
@@ -160,13 +161,14 @@ class TradingEngine:
             return False
     
     def _check_trend(self) -> bool:
-        """トレンド判定"""
+        """トレンド判定（アップトレンド + EMA50上抜け）"""
         if not self.adapter.is_uptrend(self.params.symbol):
             return False
-        
-        if self.params.ema_trail:
-            return self.adapter.is_above_ema(self.params.symbol)
-        
+
+        # EMA50 上抜けを常時チェック
+        if not self.adapter.is_above_ema(self.params.symbol):
+            return False
+
         return True
     
     def _execute_breakout_strategy(self, high: float, low: float) -> bool:
@@ -176,16 +178,19 @@ class TradingEngine:
             logger.info(f"{self.params.symbol}: No breakout detected")
             return False
         
-        # ポジションサイズ計算
-        position_size = self.position_calculator.calculate_position_size(
-            str(self.params.position_size), self.params.config
+        # ポジション金額 (USD)を計算
+        position_value = self.position_calculator.calculate_trade_value(
+            str(self.params.position_value), self.params.config
         )
         
         # エントリー価格の設定
-        entry_price = high + 0.01  # 簡略化
+        #   安全策: 高値に対して (high * limit_rate) もしくは最小幅 $0.05 の大きい方を上乗せし
+        #          Marketable Limit として発注する
+        t_cfg = self.params.config.trading
+        limit_offset = max(0.05, high * t_cfg.limit_rate)
+        entry_price = round(high + limit_offset, 2)
 
         # --- 注文価格計算 --------------------------------------------------
-        t_cfg = self.params.config.trading
 
         stops = [
             self.adapter.get_stop_price(self.params.symbol, entry_price, t_cfg.stop_rate_1),
@@ -199,7 +204,8 @@ class TradingEngine:
         ]
 
         # --- 注文分割 ------------------------------------------------------
-        qty_total = max(1, math.floor(position_size))  # 最低1株
+        # position_value は USD → 株数へ換算
+        qty_total = max(1, math.floor(position_value / entry_price))  # 最低1株
         qty_each = max(1, qty_total // 3)
         # 端数がある場合は 1 本目に加算
         qtys = [qty_each, qty_each, qty_total - qty_each * 2]
@@ -405,7 +411,7 @@ class ORBStrategy:
         # パラメータの構築
         params = TradingParameters(
             symbol=symbol,
-            position_size=position_size,
+            position_value=position_size,
             opening_range=opening_range,
             is_swing=is_swing,
             dynamic_rate=dynamic_rate,
