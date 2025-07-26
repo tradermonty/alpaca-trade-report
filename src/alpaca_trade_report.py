@@ -496,10 +496,13 @@ class TradeReport:
             current_capital += year_pnl
 
         # Expected Value (期待値)の計算も修正
-        avg_win = df[df['pnl_rate'] > 0]['pnl'].mean()  # 勝ちトレードの平均利益
-        avg_loss = df[df['pnl_rate'] < 0]['pnl'].mean()  # 負けトレードの平均損失
+        avg_win = df[df['pnl_rate'] > 0]['pnl'].mean() if len(df[df['pnl_rate'] > 0]) > 0 else 0  # 勝ちトレードの平均利益
+        avg_loss = df[df['pnl_rate'] < 0]['pnl'].mean() if len(df[df['pnl_rate'] < 0]) > 0 else 0  # 負けトレードの平均損失
         win_rate_decimal = winning_trades / total_trades if total_trades > 0 else 0  # 小数での勝率
         expected_value = (win_rate_decimal * avg_win) + ((1 - win_rate_decimal) * avg_loss)
+        
+        # Win/Loss Ratioの計算
+        win_loss_ratio = abs(avg_win / avg_loss) if avg_loss != 0 else 0
         
         # トレードポジションの平均値を計算
         avg_position_size = df['entry_price'].mean() * df['shares'].mean()
@@ -532,7 +535,10 @@ class TradeReport:
             'expected_value_pct': round(expected_value_pct, 2),
             'avg_position_size': round(avg_position_size, 2),
             'calmar_ratio': round(calmar_ratio, 2),
-            'pareto_ratio': round(pareto_ratio, 1)
+            'pareto_ratio': round(pareto_ratio, 1),
+            'avg_win': round(avg_win, 2) if not pd.isna(avg_win) else 0,
+            'avg_loss': round(avg_loss, 2) if not pd.isna(avg_loss) else 0,
+            'win_loss_ratio': round(win_loss_ratio, 2)
         }
         
         # 結果を表示
@@ -1090,164 +1096,264 @@ class TradeReport:
         html_template = f"""
         <!DOCTYPE html>
         <html>
-            <head>
-                <title>Alpaca Trade Report</title>
-                <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
-                <meta charset="UTF-8">
-                <style>
-                    body {{
-                        background-color: {TradeReport.DARK_THEME['bg_color']};
-                        color: {TradeReport.DARK_THEME['text_color']};
-                        font-family: Arial, sans-serif;
-                        margin: 20px;
-                    }}
-                    .metrics-container {{
-                        display: grid;
-                        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-                        gap: 20px;
-                        margin: 20px 0;
-                    }}
-                    .metric-card {{
-                        background-color: {TradeReport.DARK_THEME['plot_bg_color']};
-                        padding: 15px;
-                        border-radius: 8px;
-                        text-align: center;
-                    }}
-                    .metric-value {{
-                        font-size: 24px;
-                        font-weight: bold;
-                        margin: 10px 0;
-                    }}
-                    .chart-container {{
-                        margin: 20px 0;
-                        background-color: {TradeReport.DARK_THEME['plot_bg_color']};
-                        padding: 20px;
-                        border-radius: 8px;
-                    }}
-                    .trades-table {{
-                        width: 100%;
-                        border-collapse: collapse;
-                        margin: 20px 0;
-                        background-color: {TradeReport.DARK_THEME['plot_bg_color']};
-                        border-radius: 8px;
-                    }}
-                    .trades-table th, .trades-table td {{
-                        padding: 12px;
-                        text-align: left;
-                        border-bottom: 1px solid {TradeReport.DARK_THEME['grid_color']};
-                    }}
-                    .trades-table th {{
-                        background-color: {TradeReport.DARK_THEME['bg_color']};
-                        color: {TradeReport.DARK_THEME['text_color']};
-                        cursor: pointer;
-                    }}
-                    .profit {{
-                        color: {TradeReport.DARK_THEME['profit_color']};
-                    }}
-                    .loss {{
-                        color: {TradeReport.DARK_THEME['loss_color']};
-                    }}
-                    .asc::after {{
-                        content: " ▲";
-                    }}
-                    .desc::after {{
-                        content: " ▼";
-                    }}
-                </style>
-            </head>
-            <body>
-                <h1>{self.get_text('trade_report')}</h1>
-                
-                <div class="metrics-container">
-                    {self._generate_metrics_html(df)}
+        <head>
+            <title>Alpaca Trade Report</title>
+            <meta charset="UTF-8">
+            <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+            <style>
+                body {{ 
+                    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
+                    margin: 0; 
+                    padding: 20px; 
+                    background-color: #1e293b; 
+                    color: #e2e8f0; 
+                    line-height: 1.6;
+                }}
+                .container {{ max-width: 1200px; margin: 0 auto; }}
+                .header {{ 
+                    text-align: center; 
+                    margin-bottom: 40px; 
+                    padding: 20px;
+                    background: linear-gradient(135deg, #1e293b 0%, #334155 100%);
+                    border-radius: 10px;
+                }}
+                .header h1 {{ 
+                    margin: 0; 
+                    font-size: 2.5em; 
+                    color: #60a5fa; 
+                }}
+                .header p {{ 
+                    margin: 10px 0 0 0; 
+                    font-size: 1.2em; 
+                    opacity: 0.8; 
+                }}
+                .section {{ 
+                    margin: 30px 0; 
+                    padding: 20px; 
+                    background-color: #1e293b; 
+                    border-radius: 10px; 
+                    border: 1px solid #334155;
+                }}
+                .section h2 {{ 
+                    margin-top: 0; 
+                    color: #60a5fa; 
+                    border-bottom: 2px solid #334155;
+                    padding-bottom: 10px;
+                }}
+                .metrics-grid {{ 
+                    display: grid; 
+                    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); 
+                    gap: 15px; 
+                }}
+                .metric {{ 
+                    padding: 15px; 
+                    background: linear-gradient(135deg, #374151 0%, #4b5563 100%);
+                    border-radius: 8px; 
+                    border-left: 4px solid #60a5fa;
+                }}
+                .metric-label {{ 
+                    font-size: 0.9em; 
+                    opacity: 0.8; 
+                    margin-bottom: 5px; 
+                }}
+                .metric-value {{ 
+                    font-size: 1.4em; 
+                    font-weight: bold; 
+                }}
+                .positive {{ color: #22c55e; }}
+                .negative {{ color: #ef4444; }}
+                .chart-container {{
+                    margin: 20px 0;
+                    background-color: #1e293b;
+                    padding: 20px;
+                    border-radius: 8px;
+                }}
+                .table-container {{
+                    max-height: 400px;
+                    overflow-y: auto;
+                    border: 1px solid #334155;
+                    border-radius: 8px;
+                    margin: 10px 0;
+                    width: 100%;
+                    overflow-x: auto;
+                }}
+                .sortable-table {{
+                    width: 100%;
+                    border-collapse: collapse;
+                }}
+                .sortable-table th {{
+                    position: sticky;
+                    top: 0;
+                    background-color: #1e293b;
+                    border-bottom: 2px solid #334155;
+                    padding: 12px 8px;
+                    text-align: left;
+                    font-weight: bold;
+                    color: #60a5fa;
+                    user-select: none;
+                    cursor: pointer;
+                }}
+                .sortable-table th:hover {{
+                    background-color: #334155;
+                }}
+                .sortable-table td {{
+                    padding: 10px 8px;
+                    border-bottom: 1px solid rgba(51, 65, 85, 0.3);
+                }}
+                .sortable-table tr:hover {{
+                    background-color: rgba(51, 65, 85, 0.3);
+                }}
+                .profit {{ color: #22c55e; }}
+                .loss {{ color: #ef4444; }}
+                .analysis-section {{
+                    margin: 20px 0;
+                }}
+                .analysis-section h3 {{
+                    color: #60a5fa;
+                    margin-bottom: 10px;
+                }}
+                .asc::after {{
+                    content: " ▲";
+                }}
+                .desc::after {{
+                    content: " ▼";
+                }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <div class="header">
+                    <h1>{self.get_text('trade_report')}</h1>
+                    <p>期間: {self.start_date} ～ {self.end_date}</p>
                 </div>
                 
-                <div class="chart-container">
+                <div class="section">
+                    <h2>パフォーマンス指標</h2>
+                    <div class="metrics-grid">
+                        {self._generate_metrics_html(df)}
+                    </div>
+                </div>
+                
+                <div class="section">
                     <h2>{self.get_text('equity_curve')}</h2>
-                    {equity_chart}
+                    <div class="chart-container">
+                        {equity_chart}
+                    </div>
                 </div>
                 
-                <div class="chart-container">
+                <div class="section">
                     <h2>{self.get_text('drawdown_chart')}</h2>
-                    {drawdown_chart}
+                    <div class="chart-container">
+                        {drawdown_chart}
+                    </div>
                 </div>
                 
-                <div class="chart-container">
+                <div class="section">
                     <h2>{self.get_text('return_distribution')}</h2>
-                    {distribution_chart}
+                    <div class="chart-container">
+                        {distribution_chart}
+                    </div>
                 </div>
                 
-                <div class="chart-container">
+                <div class="section">
                     <h2>{self.get_text('yearly_performance_chart')}</h2>
-                    {yearly_chart}
+                    <div class="chart-container">
+                        {yearly_chart}
+                    </div>
                 </div>
-                                
-                <div class="chart-container">
+                
+                <div class="section">
                     <h2>{self.get_text('analysis_title')}</h2>
                     
                     <div class="analysis-section">
                         <h3>{self.get_text('monthly_performance')}</h3>
-                        {analysis_charts['monthly']}
+                        <div class="chart-container">
+                            {analysis_charts['monthly']}
+                        </div>
                     </div>
                     
                     <div class="analysis-section">
                         <h3>{self.get_text('sector_performance')}</h3>
-                        {analysis_charts['sector']}
+                        <div class="chart-container">
+                            {analysis_charts['sector']}
+                        </div>
                     </div>
                     
                     <div class="analysis-section">
                         <h3>{self.get_text('industry_performance')}</h3>
-                        {analysis_charts['industry']}
+                        <div class="chart-container">
+                            {analysis_charts['industry']}
+                        </div>
                     </div>
                     
                     <div class="analysis-section">
                         <h3>{self.get_text('gap_analysis')}</h3>
-                        {analysis_charts['gap']}
+                        <div class="chart-container">
+                            {analysis_charts['gap']}
+                        </div>
                     </div>
                     
                     <div class="analysis-section">
                         <h3>{self.get_text('trend_analysis')}</h3>
-                        {analysis_charts['trend']}
+                        <div class="chart-container">
+                            {analysis_charts['trend']}
+                        </div>
                     </div>
 
                     <div class="analysis-section">
                         <h3>{self.get_text('eps_analysis')}</h3>
-                        {analysis_charts['eps_surprise']}
+                        <div class="chart-container">
+                            {analysis_charts['eps_surprise']}
+                        </div>
                     </div>
                     
                     <div class="analysis-section">
                         <h3>{self.get_text('eps_growth_performance')}</h3>
-                        {analysis_charts['eps_growth']}
+                        <div class="chart-container">
+                            {analysis_charts['eps_growth']}
+                        </div>
                     </div>
                     
                     <div class="analysis-section">
                         <h3>{self.get_text('eps_acceleration_performance')}</h3>
-                        {analysis_charts['eps_acceleration']}
+                        <div class="chart-container">
+                            {analysis_charts['eps_acceleration']}
+                        </div>
                     </div>
-                    <div class="chart-container">
+                    <div class="analysis-section">
                         <h3>{self.get_text('volume_trend_analysis')}</h3>
-                        {analysis_charts['volume']}
+                        <div class="chart-container">
+                            {analysis_charts['volume']}
+                        </div>
                     </div>
                     
-                    <div class="chart-container">
+                    <div class="analysis-section">
                         <h3>{self.get_text('ma200_analysis')}</h3>
-                        {analysis_charts['ma200']}
+                        <div class="chart-container">
+                            {analysis_charts['ma200']}
+                        </div>
                     </div>
                     
-                    <div class="chart-container">
+                    <div class="analysis-section">
                         <h3>{self.get_text('ma50_analysis')}</h3>
-                        {analysis_charts['ma50']}
-                    </div>                
+                        <div class="chart-container">
+                            {analysis_charts['ma50']}
+                        </div>
+                    </div>
                 </div>
                 
-                <div class="trades-container">
+                <div class="section">
                     <h2>{self.get_text('trade_history')}</h2>
-                    {self._generate_trades_table_html()}
+                    <div class="table-container">
+                        {self._generate_trades_table_html()}
+                    </div>
                 </div>
                 
-                <script>
-                    // テーブルソート機能
-                    document.querySelectorAll('.trades-table th').forEach(th => th.addEventListener('click', (() => {{
+            </div>
+            
+            <script>
+                // テーブルソート機能
+                document.querySelectorAll('.sortable-table th').forEach(th => th.addEventListener('click', (() => {{
                         const table = th.closest('table');
                         const tbody = table.querySelector('tbody');
                         const rows = Array.from(tbody.querySelectorAll('tr'));
@@ -1297,6 +1403,128 @@ class TradeReport:
         
         # ブラウザでレポートを開く
         webbrowser.open('file://' + os.path.realpath(output_file))
+
+    def _generate_metrics_html(self, df):
+        """メトリクス表示のHTML生成"""
+        metrics = self.calculate_metrics()
+        
+        # 勝率の色設定
+        win_rate_class = "positive" if metrics['win_rate'] >= 50 else "negative"
+        # 総リターンの色設定
+        total_return_class = "positive" if metrics['total_return_pct'] >= 0 else "negative"
+        # CAGRの色設定
+        cagr_class = "positive" if metrics['cagr'] >= 0 else "negative"
+        # プロフィットファクターの色設定
+        pf_class = "positive" if metrics['profit_factor'] >= 1.0 else "negative"
+        # 期待値の色設定
+        ev_class = "positive" if metrics['expected_value_pct'] >= 0 else "negative"
+        
+        return f"""
+            <div class="metric">
+                <div class="metric-label">Total Trades</div>
+                <div class="metric-value">{metrics['number_of_trades']}</div>
+            </div>
+            <div class="metric">
+                <div class="metric-label">Win Rate</div>
+                <div class="metric-value {win_rate_class}">{metrics['win_rate']:.1f}%</div>
+            </div>
+            <div class="metric">
+                <div class="metric-label">Total Return</div>
+                <div class="metric-value {total_return_class}">{metrics['total_return_pct']:.2f}%</div>
+            </div>
+            <div class="metric">
+                <div class="metric-label">CAGR (Annualized Return)</div>
+                <div class="metric-value {cagr_class}">{metrics['cagr']:.2f}%</div>
+            </div>
+            <div class="metric">
+                <div class="metric-label">Profit Factor</div>
+                <div class="metric-value {pf_class}">{metrics['profit_factor']:.2f}</div>
+            </div>
+            <div class="metric">
+                <div class="metric-label">Max Drawdown</div>
+                <div class="metric-value negative">{metrics['max_drawdown_pct']:.2f}%</div>
+            </div>
+            <div class="metric">
+                <div class="metric-label">Avg Win</div>
+                <div class="metric-value positive">${metrics.get('avg_win', 0):,.2f}</div>
+            </div>
+            <div class="metric">
+                <div class="metric-label">Avg Loss</div>
+                <div class="metric-value negative">${metrics.get('avg_loss', 0):,.2f}</div>
+            </div>
+            <div class="metric">
+                <div class="metric-label">Win/Loss Ratio</div>
+                <div class="metric-value">{metrics.get('win_loss_ratio', 0):.2f}</div>
+            </div>
+            <div class="metric">
+                <div class="metric-label">Expected Value</div>
+                <div class="metric-value {ev_class}">{metrics['expected_value_pct']:.2f}%</div>
+            </div>
+            <div class="metric">
+                <div class="metric-label">Calmar Ratio</div>
+                <div class="metric-value">{metrics['calmar_ratio']:.2f}</div>
+            </div>
+            <div class="metric">
+                <div class="metric-label">Pareto Ratio</div>
+                <div class="metric-value">{metrics['pareto_ratio']:.1f}%</div>
+            </div>
+        """
+
+    def _generate_trades_table_html(self):
+        """トレード履歴テーブルのHTML生成"""
+        if not self.trades:
+            return "<p>トレード記録がありません</p>"
+        
+        # トレードをDataFrameに変換
+        df = pd.DataFrame(self.trades)
+        df = df.sort_values('entry_date', ascending=False)
+        
+        table_html = """
+        <table class="sortable-table">
+            <thead>
+                <tr>
+                    <th>Symbol</th>
+                    <th>Entry Date</th>
+                    <th>Entry Price</th>
+                    <th>Exit Date</th>
+                    <th>Exit Price</th>
+                    <th>Holding Period</th>
+                    <th>Shares</th>
+                    <th>PnL Rate</th>
+                    <th>PnL</th>
+                    <th>Exit Reason</th>
+                </tr>
+            </thead>
+            <tbody>
+        """
+        
+        for _, trade in df.iterrows():
+            # 損益に基づく色設定 (profit/loss クラスを使用)
+            pnl_class = "profit" if trade['pnl'] >= 0 else "loss"
+            pnl_rate_class = "profit" if trade['pnl_rate'] >= 0 else "loss"
+            holding_period = f"{trade['holding_period']:.0f} days"
+            
+            table_html += f"""
+                <tr>
+                    <td>{trade['ticker']}</td>
+                    <td>{pd.to_datetime(trade['entry_date']).strftime('%Y-%m-%d')}</td>
+                    <td>${trade['entry_price']:.2f}</td>
+                    <td>{pd.to_datetime(trade['exit_date']).strftime('%Y-%m-%d')}</td>
+                    <td>${trade['exit_price']:.2f}</td>
+                    <td>{holding_period}</td>
+                    <td>{trade['shares']:,.0f}</td>
+                    <td class="{pnl_rate_class}">{trade['pnl_rate']:.2f}%</td>
+                    <td class="{pnl_class}">${trade['pnl']:,.2f}</td>
+                    <td>{trade['exit_reason']}</td>
+                </tr>
+            """
+        
+        table_html += """
+            </tbody>
+        </table>
+        """
+        
+        return table_html
 
     def analyze_performance(self):
         """バックテストの詳細分析を実行"""
@@ -2714,54 +2942,6 @@ class TradeReport:
         
         return result_df
 
-    def _generate_metrics_html(self, df):
-        """メトリクスカードのHTML生成"""
-        metrics = self.calculate_metrics()
-        
-        metrics_html = f"""
-            <div class="metric-card">
-                <h3>{self.get_text('total_trades')}</h3>
-                <div class="metric-value">{metrics['number_of_trades']}</div>
-            </div>
-            <div class="metric-card">
-                <h3>CAGR</h3>
-                <div class="metric-value">{metrics['cagr']:.2f}%</div>
-            </div>
-            <div class="metric-card">
-                <h3>{self.get_text('win_rate')}</h3>
-                <div class="metric-value">{metrics['win_rate']:.1f}%</div>
-            </div>
-            <div class="metric-card">
-                <h3>{self.get_text('avg_pnl')}</h3>
-                <div class="metric-value">{metrics['avg_win_loss_rate']:.2f}%</div>
-            </div>
-            <div class="metric-card">
-                <h3>{self.get_text('profit_factor')}</h3>
-                <div class="metric-value">{metrics['profit_factor']:.2f}</div>
-            </div>
-            <div class="metric-card">
-                <h3>{self.get_text('max_drawdown')}</h3>
-                <div class="metric-value">{metrics['max_drawdown_pct']:.2f}%</div>
-            </div>
-            <div class="metric-card">
-                <h3>{self.get_text('total_return')}</h3>
-                <div class="metric-value">{metrics['total_return_pct']:.2f}%</div>
-            </div>
-            <div class="metric-card">
-                <h3>{self.get_text('expected_value')}</h3>
-                <div class="metric-value">{metrics['expected_value_pct']:.2f}%</div>
-            </div>
-            <div class="metric-card">
-                <h3>{self.get_text('calmar_ratio')}</h3>
-                <div class="metric-value">{metrics['calmar_ratio']:.2f}</div>
-            </div>
-            <div class="metric-card">
-                <h3>{self.get_text('pareto_ratio')}</h3>
-                <div class="metric-value">{metrics['pareto_ratio']:.1f}%</div>
-            </div>
-        """
-        
-        return metrics_html
 
     def _generate_trades_table_html(self):
         """トレード履歴テーブルのHTML生成"""
@@ -2789,7 +2969,7 @@ class TradeReport:
             rows.append(row)
         
         table = f"""
-            <table class="trades-table">
+            <table class="sortable-table">
                 <thead>
                     <tr>
                         <th>{self.get_text('symbol')}</th>
