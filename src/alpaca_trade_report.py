@@ -1,128 +1,33 @@
-"""Alpaca取引レポート生成システム（リファクタリング版）
-
-Alpacaアカウントの取引履歴を分析し、包括的なパフォーマンスレポートを生成します。
-バックテスト機能、リスク分析、視覚的なチャート生成を含みます。
-
-新しいコードベースの実装方針に準拠：
-- グローバル変数の排除
-- 共通定数の使用  
-- API クライアントの統合
-- FMP API への移行
-- 設定管理の改善
-- エラーハンドリングの強化
-"""
-
 import argparse
 from datetime import datetime, timedelta
-from dataclasses import dataclass
 import requests
 import pandas as pd
 import numpy as np
 from dotenv import load_dotenv
 import os
 from collections import defaultdict
-import time
-from typing import Optional, List, Dict, Any, Tuple
+from typing import Optional, List
 import logging
 from tqdm import tqdm
 import plotly.graph_objs as go
 from plotly.offline import plot
 import webbrowser
-from bs4 import BeautifulSoup
 import alpaca_trade_api as tradeapi
-import platform
-import subprocess
+from fmp_data_fetcher import FMPDataFetcher
 
-# コードベース共通モジュールのインポート
-try:
-    from api_clients import get_alpaca_client, get_fmp_client
-    from common_constants import TIMEZONE, ACCOUNT
-    from logging_config import get_logger
-except ImportError as e:
-    print(f"警告: 共通モジュールのインポートに失敗しました: {e}")
-    print("フォールバック実装を使用します")
-    
-    # フォールバック実装
-    from zoneinfo import ZoneInfo
-    
-    class TimeZoneConfig:
-        NY = ZoneInfo("US/Eastern")
-        UTC = ZoneInfo("UTC")
-    
-    class AccountConfig:
-        LIVE = 'live'
-        PAPER = 'paper'
-    
-    TIMEZONE = TimeZoneConfig()
-    ACCOUNT = AccountConfig()
-    
-    def get_logger(name):
-        import logging
-        logging.basicConfig(level=logging.INFO)
-        return logging.getLogger(name)
-        
-    def get_alpaca_client(account_type='paper'):
-        import alpaca_trade_api as tradeapi
-        import os
-        from dotenv import load_dotenv
-        
-        load_dotenv()
-        if account_type == 'live':
-            api_key = os.getenv('ALPACA_API_KEY_LIVE')
-            secret_key = os.getenv('ALPACA_SECRET_KEY_LIVE')
-            base_url = 'https://api.alpaca.markets'
-        else:
-            api_key = os.getenv('ALPACA_API_KEY_PAPER')
-            secret_key = os.getenv('ALPACA_SECRET_KEY_PAPER')
-            base_url = 'https://paper-api.alpaca.markets'
-            
-        return tradeapi.REST(api_key, secret_key, base_url, api_version='v2')
-    
-    def get_fmp_client():
-        # FMPクライアントのフォールバック実装
-        class FMPClientFallback:
-            def __init__(self):
-                self.api_key = os.getenv('FMP_API_KEY')
-                
-            def get_earnings_calendar(self, start_date, end_date):
-                return []  # 空のリストを返す
-                
-            def get_historical_price_data(self, symbol, start_date, end_date):
-                import pandas as pd
-                return pd.DataFrame()  # 空のDataFrameを返す
-        
-        return FMPClientFallback()
+# 環境変数の読み込み
+load_dotenv()
+FMP_API_KEY = os.getenv('FMP_API_KEY')
+ALPACA_API_KEY = os.getenv('ALPACA_API_KEY')
+ALPACA_SECRET_KEY = os.getenv('ALPACA_SECRET_KEY')
+ALPACA_API_URL = os.getenv('ALPACA_API_URL', 'https://paper-api.alpaca.markets')
 
-# ログ設定
-logger = get_logger(__name__)
-
-
-@dataclass
-class TradeReportConfig:
-    """取引レポート設定クラス"""
-    start_date: str = '2023-01-01'
-    end_date: str = '2023-12-31'
-    stop_loss: float = 6.0
-    trail_stop_ma: int = 21
-    max_holding_days: int = 90
-    initial_capital: float = 10000.0
-    risk_limit: float = 6.0
-    partial_profit: bool = True
-    language: str = 'en'
-    pre_earnings_change: float = -10.0
-    account_type: str = 'paper'
-    
-    def __post_init__(self):
-        """ 設定値の検証 """
-        if self.stop_loss <= 0 or self.stop_loss > 50:
-            raise ValueError("ストップロスは0%から50%の間で設定してください")
-        if self.initial_capital <= 0:
-            raise ValueError("初期資本は正の値である必要があります")
-
+if not ALPACA_API_KEY or not ALPACA_SECRET_KEY:
+    raise ValueError("ALPACA_API_KEY or ALPACA_SECRET_KEY is not set")
+if not FMP_API_KEY:
+    raise ValueError("FMP_API_KEY is not set")
 
 class TradeReport:
-    """取引レポート生成クラス（リファクタリング版）"""
-    
     # ダークモードの色設定
     DARK_THEME = {
         'bg_color': '#1e293b',
@@ -134,2002 +39,3264 @@ class TradeReport:
         'loss_color': '#ef4444'
     }
 
-    def __init__(self, config: TradeReportConfig = None):
-        """取引レポートの初期化
-        
-        Args:
-            config: 取引レポート設定オブジェクト
-        """
-        if config is None:
-            config = TradeReportConfig()
-        
-        self.config = config
-        
+    def __init__(self, start_date, end_date, stop_loss=6, trail_stop_ma=21,
+                 max_holding_days=90, initial_capital=10000, 
+                 risk_limit=6, partial_profit=True, language='en', 
+                 pre_earnings_change=-10):
+        """バックテストの初期化"""
         # 日付の妥当性チェック
-        self._validate_dates()
+        current_date = datetime.now()
+        end_date_dt = datetime.strptime(end_date, '%Y-%m-%d')
         
-        # APIクライアントの初期化
-        self.alpaca_client = get_alpaca_client(self.config.account_type)
-        self.fmp_client = get_fmp_client()
+        if end_date_dt > current_date:
+            print(f"警告: 終了日({end_date})が未来の日付です。現在の日付を使用します。")
+            self.end_date = current_date.strftime('%Y-%m-%d')
+        else:
+            self.end_date = end_date
+        
+        self.start_date = start_date
+        self.stop_loss = stop_loss
+        self.trail_stop_ma = trail_stop_ma
+        self.max_holding_days = max_holding_days
+        self.initial_capital = initial_capital  # 初期値として設定
+        self.risk_limit = risk_limit
+        self.partial_profit = partial_profit
+        self.fmp_client = FMPDataFetcher()
+        self.language = language
+        self.pre_earnings_change = pre_earnings_change
         
         # トレード記録用
         self.trades = []
         self.positions = []
         self.equity_curve = []
         
-        # 初期資本をAlpaca APIから取得
-        self._initialize_capital()
-        
-    def _validate_dates(self):
-        """日付の妥当性チェック"""
-        current_date = datetime.now(TIMEZONE.NY)
-        end_date_dt = datetime.strptime(self.config.end_date, '%Y-%m-%d')
-        
-        # タイムゾーン情報を追加して比較可能にする
-        end_date_dt = end_date_dt.replace(tzinfo=TIMEZONE.NY)
-        
-        if end_date_dt > current_date:
-            logger.warning(f"終了日({self.config.end_date})が未来の日付です。現在の日付を使用します。")
-            self.config.end_date = current_date.strftime('%Y-%m-%d')
-            
-    def _initialize_capital(self):
-        """初期資本の設定"""
+        # 初期資本をAlpaca APIから取得（エラー時は初期値を使用）
         try:
-            self.initial_capital = self.get_account_equity_at_date(self.config.start_date)
-            logger.info(f"初期資本: ${self.initial_capital:,.2f} ({self.config.start_date}時点)")
+            self.initial_capital = self.get_account_equity_at_date(start_date)
+            print(f"初期資本: ${self.initial_capital:,.2f} ({start_date}時点)")
         except Exception as e:
-            logger.error(f"初期資本の取得に失敗: {e}")
-            self.initial_capital = self.config.initial_capital
-            logger.info(f"デフォルト値を使用: ${self.initial_capital:,.2f}")
+            print(f"初期資本の取得に失敗しました: {str(e)}")
+            print(f"デフォルト値を使用します: ${self.initial_capital:,.2f}")
+        
 
-    def get_earnings_data(self) -> Dict[str, List]:
-        """FMP APIから決算データを取得"""
-        logger.info(f"決算データの取得を開始 ({self.config.start_date} から {self.config.end_date})")
+    def _load_api_key(self):
+        """FMPのAPIキーを読み込む"""
+        load_dotenv()
+        api_key = os.getenv('FMP_API_KEY')
+        if not api_key:
+            raise ValueError(".envファイルにFMP_API_KEYが設定されていません")
+        return api_key
+
+    def get_earnings_data(self):
+        """FMPから決算データを取得してEODHD形式に変換"""
+        print(f"\n1. 決算データの取得を開始 ({self.start_date} から {self.end_date})")
         
         try:
-            # FMP APIで決算カレンダーを取得
-            all_earnings = self.fmp_client.get_earnings_calendar(
-                self.config.start_date, 
-                self.config.end_date
+            # FMPクライアントを使用して決算カレンダーを取得
+            fmp_earnings_data = self.fmp_client.get_earnings_calendar(
+                from_date=self.start_date,
+                to_date=self.end_date,
+                us_only=True
             )
             
-            # 結果を整形
-            combined_data = {'earnings': all_earnings}
-            logger.info(f"決算データ取得完了: {len(all_earnings)}件")
-            return combined_data
+            print(f"FMPから取得したデータ: {len(fmp_earnings_data)}件")
+            
+            # FMPデータをEODHD形式に変換
+            converted_earnings = []
+            for earning in fmp_earnings_data:
+                try:
+                    # サプライズ率の計算
+                    eps_actual = earning.get('epsActual')
+                    eps_estimate = earning.get('epsEstimate') or earning.get('epsEstimated')
+                    
+                    percent = 0
+                    if eps_actual is not None and eps_estimate is not None and eps_estimate != 0:
+                        try:
+                            actual_val = float(eps_actual)
+                            estimate_val = float(eps_estimate)
+                            if estimate_val != 0:
+                                percent = ((actual_val - estimate_val) / abs(estimate_val)) * 100
+                        except (ValueError, TypeError):
+                            continue
+                    
+                    # EODHD形式に変換
+                    converted_earning = {
+                        'code': earning.get('symbol', '') + '.US',
+                        'report_date': earning.get('date', ''),
+                        'date': earning.get('date', ''),
+                        'before_after_market': self._convert_timing(earning.get('time', '')),
+                        'currency': 'USD',
+                        'actual': eps_actual,
+                        'estimate': eps_estimate,
+                        'percent': percent,
+                        'difference': float(eps_actual or 0) - float(eps_estimate or 0) if eps_actual is not None and eps_estimate is not None else 0,
+                        'revenue_actual': earning.get('revenueActual'),
+                        'revenue_estimate': earning.get('revenueEstimate'),
+                        'updated_from_date': earning.get('updatedFromDate', earning.get('date', '')),
+                        'fiscal_date_ending': earning.get('fiscalDateEnding', earning.get('date', ''))
+                    }
+                    
+                    converted_earnings.append(converted_earning)
+                    
+                except Exception as e:
+                    print(f"変換エラー ({earning.get('symbol', 'Unknown')}): {str(e)}")
+                    continue
+            
+            print(f"変換後のデータ: {len(converted_earnings)}件")
+            
+            # EODHD形式に合わせて返す
+            return {'earnings': converted_earnings}
             
         except Exception as e:
-            logger.error(f"決算データの取得中にエラーが発生: {e}")
+            print(f"決算データの取得中にエラーが発生: {str(e)}")
             raise
+    
+    def _convert_timing(self, fmp_timing):
+        """FMPのタイミング情報をEODHD形式に変換"""
+        if not fmp_timing:
+            return None
+        
+        timing_lower = fmp_timing.lower()
+        if any(keyword in timing_lower for keyword in ['before', 'pre', 'bmo']):
+            return 'BeforeMarket'
+        elif any(keyword in timing_lower for keyword in ['after', 'post', 'amc']):
+            return 'AfterMarket'
+        else:
+            return None
 
     def get_historical_data(self, symbol: str, start_date: str, end_date: str) -> Optional[pd.DataFrame]:
         """
-        FMP APIを使用して指定された銘柄の株価データを取得
-        
-        Args:
-            symbol: 銘柄シンボル
-            start_date: 開始日 (YYYY-MM-DD)
-            end_date: 終了日 (YYYY-MM-DD)
-            
-        Returns:
-            株価データのPandas DataFrame
+        FMPのAPIを使用して指定された銘柄の株価データを取得
         """
         try:
-            logger.debug(f"株価データ取得開始: {symbol}")
-            logger.debug(f"期間: {start_date} から {end_date}")
+            print(f"株価データ取得開始: {symbol}")  # デバッグログ追加
+            print(f"期間: {start_date} から {end_date}")  # デバッグログ追加
             
-            # FMP APIで履歴データを取得
-            df = self.fmp_client.get_historical_price_data(symbol, start_date, end_date)
+            # FMPクライアントを使用して履歴データを取得
+            price_data = self.fmp_client.get_historical_price_data(
+                symbol=symbol,
+                from_date=start_date,
+                to_date=end_date
+            )
             
-            if df.empty:
-                logger.warning(f"銘柄 {symbol} のデータが取得できませんでした")
+            if not price_data:
+                logging.warning(f"データなし: {symbol}")
                 return None
                 
-            logger.info(f"銘柄 {symbol}: {len(df)}件のデータを取得")
+            # DataFrameに変換
+            df = pd.DataFrame(price_data)
+            print(f"取得データ件数: {len(df)}")  # デバッグログ追加
+            
+            # FMPの日付フォーマットに対応
+            df['date'] = pd.to_datetime(df['date'])
+            df = df.set_index('date').sort_index()
+            
+            # 重複データの削除
+            df = df[~df.index.duplicated(keep='first')]
+            
+            # FMPのカラム名を標準形式に変換
+            df.rename(columns={
+                'adjClose': 'Close',
+                'open': 'Open',
+                'high': 'High',
+                'low': 'Low',
+                'volume': 'Volume'
+            }, inplace=True)
+            
+            # 21日移動平均を追加
+            df['MA21'] = df['Close'].rolling(window=21).mean()
+            
+            logging.info(f"成功: {symbol}")
             return df
             
         except Exception as e:
-            logger.error(f"銘柄 {symbol} のデータ取得中にエラー: {e}")
+            logging.error(f"予期せぬエラー {symbol}: {str(e)}")
             return None
 
-    def get_account_equity_at_date(self, date: str) -> float:
-        """指定した日付のアカウント残高を取得"""
-        try:
-            # Alpaca APIでアカウント情報を取得
-            account = self.alpaca_client.api.get_account()
-            
-            if account and account.equity:
-                return float(account.equity)
-            else:
-                logger.warning(f"アカウントデータが取得できません")
-                return self.config.initial_capital
-                
-        except Exception as e:
-            logger.error(f"アカウント残高取得エラー: {e}")
-            return self.config.initial_capital
+    def determine_trade_date(self, report_date, market_timing):
+        """トレード日を決定"""
+        report_date = datetime.strptime(report_date, "%Y-%m-%d")
+        if market_timing == "BeforeMarket":
+            return report_date.strftime("%Y-%m-%d")
+        else:
+            # BeforeMarket以外はすべてAfterMarketと同じ扱い
+            next_date = report_date + timedelta(days=1)
+            return next_date.strftime("%Y-%m-%d")
 
-    def get_alpaca_trades(self) -> List[Dict]:
-        """Alpacaアカウントから取引履歴を取得"""
-        try:
-            logger.info("Alpaca取引履歴の取得を開始")
-            
-            # 日付を適切なフォーマットに変換
-            from datetime import datetime
-            import pytz
-            
-            # start_dateとend_dateをISO format with timezoneに変換
-            start_dt = datetime.strptime(self.config.start_date, '%Y-%m-%d')
-            start_dt = pytz.timezone('America/New_York').localize(start_dt)
-            
-            end_dt = datetime.strptime(self.config.end_date, '%Y-%m-%d')
-            end_dt = pytz.timezone('America/New_York').localize(end_dt)
-            
-            logger.info(f"取引履歴取得期間: {start_dt.isoformat()} ～ {end_dt.isoformat()}")
-            
-            # まずアクティビティ（トレード実行履歴）を取得
-            logger.info("アクティビティ（トレード実行履歴）を取得中...")
+    def filter_earnings_data(self, data):
+        """決算データのフィルタリング処理"""
+        if 'earnings' not in data:
+            raise KeyError("JSONデータに'earnings'キーが存在しません")
+        
+        total_records = len(data['earnings'])
+        print(f"\nフィルタリング処理を開始 (全{total_records}件)")
+        
+        # 第1段階のフィルタリング
+        print("\n=== 第1段階フィルタリング ===")
+        print("条件:")
+        print("1. .US銘柄のみ")
+        print("2. サプライズ率5%以上")
+        print("3. 実績値がプラス")
+        if self.mid_small_only:
+            print("4. 時価総額が1000億ドル未満")
+        
+        first_filtered = []
+        skipped_count = 0
+        
+        # tqdmを使用してプログレスバーを表示
+        for earning in tqdm(data['earnings'], desc="第1段階フィルタリング", total=total_records):
             try:
-                all_activities = []
-                page_token = None
+                # 1. .US銘柄のチェック
+                if not earning['code'].endswith('.US'):
+                    skipped_count += 1
+                    continue
                 
-                while True:
-                    request_params = {
-                        'activity_types': 'FILL',
-                        'after': start_dt.date(),
-                        'until': end_dt.date(),
-                        'direction': 'desc',
-                        'page_size': 100
-                    }
-                    
-                    if page_token:
-                        request_params['page_token'] = page_token
-                    
-                    activities_page = self.alpaca_client.api.get_activities(**request_params)
-                    
-                    if not activities_page:
-                        break
-                    
-                    all_activities.extend(activities_page)
-                    logger.info(f"アクティビティページ取得: {len(activities_page)}件 (累計: {len(all_activities)}件)")
-                    
-                    # 次のページがあるかチェック（100件未満なら最後のページ）
-                    if len(activities_page) < 100:
-                        break
-                    
-                    # 最後のアクティビティの時刻をpage_tokenとして使用
-                    page_token = activities_page[-1].transaction_time
+                # ターゲットシンボルのフィルタリング
+                if self.target_symbols is not None:
+                    symbol = earning['code'][:-3]  # .USを除去
+                    if symbol not in self.target_symbols:
+                        skipped_count += 1
+                        continue
                 
-                activities = all_activities
-                logger.info(f"アクティビティ取得完了: {len(activities)}件")
-                
-                # アクティビティから取引データを作成
-                trades = []
-                for activity in activities:
-                    if hasattr(activity, 'side') and hasattr(activity, 'symbol'):
-                        trade_data = {
-                            'symbol': activity.symbol,
-                            'side': activity.side,
-                            'qty': float(activity.qty),
-                            'price': float(activity.price),
-                            'filled_at': activity.transaction_time,
-                            'order_id': activity.order_id if hasattr(activity, 'order_id') else 'activity'
-                        }
-                        trades.append(trade_data)
-                
-                logger.info(f"アクティビティから{len(trades)}件の取引を抽出")
-                
-                if trades:
-                    # 取引の日付分布をログ出力
-                    trade_dates = [pd.to_datetime(t['filled_at']).strftime('%Y-%m') for t in trades]
-                    from collections import Counter
-                    date_distribution = Counter(trade_dates)
-                    logger.info(f"月別取引分布: {dict(sorted(date_distribution.items()))}")
-                    
-                    # 最初と最後の取引日も確認
-                    first_trade = min(trades, key=lambda x: x['filled_at'])
-                    last_trade = max(trades, key=lambda x: x['filled_at'])
-                    logger.info(f"最初の取引: {first_trade['filled_at'].strftime('%Y-%m-%d')} {first_trade['symbol']}")
-                    logger.info(f"最後の取引: {last_trade['filled_at'].strftime('%Y-%m-%d')} {last_trade['symbol']}")
-                    
-                    return trades
-                    
-            except Exception as e:
-                logger.error(f"アクティビティ取得エラー: {e}")
-                logger.info("フォールバック: 注文履歴を使用します")
-            
-            # フォールバック: 注文履歴を月単位で取得（APIの制限を回避）
-            all_orders = []
-            
-            # 月単位で期間を分割
-            current_date = start_dt
-            
-            while current_date <= end_dt:
-                # 今月の最終日を計算
-                if current_date.month == 12:
-                    next_month = current_date.replace(year=current_date.year + 1, month=1, day=1)
-                else:
-                    next_month = current_date.replace(month=current_date.month + 1, day=1)
-                
-                month_end = next_month - timedelta(days=1)
-                month_end = min(month_end, end_dt)
-                
-                logger.info(f"注文履歴取得: {current_date.strftime('%Y-%m-%d')} ～ {month_end.strftime('%Y-%m-%d')}")
-                
+                # 2&3. サプライズ率と実績値のチェック
                 try:
-                    # 月単位で注文履歴を取得
-                    month_orders = self.alpaca_client.api.list_orders(
-                        status='all',
-                        limit=500,
-                        after=current_date.isoformat(),
-                        until=month_end.isoformat(),
-                        direction='desc',
-                        nested=True  # 詳細な情報を取得
-                    )
-                    
-                    if month_orders:
-                        all_orders.extend(month_orders)
-                        logger.info(f"  {len(month_orders)}件の注文を取得")
-                    else:
-                        logger.info(f"  注文なし")
-                    
-                except Exception as e:
-                    logger.error(f"月次取得エラー ({current_date.strftime('%Y-%m')}): {e}")
+                    percent = float(earning.get('percent', 0))
+                    actual = float(earning.get('actual', 0))
+                except (ValueError, TypeError):
+                    skipped_count += 1
+                    continue
                 
-                # 次の月へ
-                if current_date.month == 12:
-                    current_date = current_date.replace(year=current_date.year + 1, month=1, day=1)
-                else:
-                    current_date = current_date.replace(month=current_date.month + 1, day=1)
-            
-            logger.info(f"全期間での注文取得完了: {len(all_orders)}件")
-            orders = all_orders
-            
-            trades = []
-            filtered_count = 0
-            
-            for order in orders:
-                if order.status == 'filled':
-                    # 日付フィルタリングを手動で実行
-                    order_date = order.filled_at
-                    if order_date and start_dt <= order_date <= end_dt:
-                        trade_data = {
-                            'symbol': order.symbol,
-                            'side': order.side,
-                            'qty': float(order.qty),
-                            'price': float(order.filled_avg_price) if order.filled_avg_price else 0,
-                            'filled_at': order.filled_at,
-                            'order_id': order.id
-                        }
-                        trades.append(trade_data)
-                    else:
-                        filtered_count += 1
-            
-            # 取引の日付分布をログ出力
-            if trades:
-                trade_dates = [pd.to_datetime(t['filled_at']).strftime('%Y-%m') for t in trades]
-                from collections import Counter
-                date_distribution = Counter(trade_dates)
-                logger.info(f"取引履歴取得完了: {len(trades)}件 (期間外除外: {filtered_count}件)")
-                logger.info(f"月別取引分布: {dict(sorted(date_distribution.items()))}")
+                if percent < 5 or actual <= 0:
+                    skipped_count += 1
+                    continue
                 
-                # 最初と最後の取引日も確認
-                first_trade = min(trades, key=lambda x: x['filled_at'])
-                last_trade = max(trades, key=lambda x: x['filled_at'])
-                logger.info(f"最初の取引: {first_trade['filled_at'].strftime('%Y-%m-%d')} {first_trade['symbol']}")
-                logger.info(f"最後の取引: {last_trade['filled_at'].strftime('%Y-%m-%d')} {last_trade['symbol']}")
-            else:
-                logger.info("取引履歴取得完了: 0件")
-            
-            return trades
-            
-        except Exception as e:
-            logger.error(f"取引履歴取得エラー: {e}")
-            return []
-
-    def _create_sample_trades(self) -> List[Dict]:
-        """テスト用のサンプル取引データを作成"""
-        import uuid
-        import random
-        from datetime import timedelta
+                first_filtered.append(earning)
+                
+            except Exception as e:
+                tqdm.write(f"\n銘柄の処理中にエラー ({earning.get('code', 'Unknown')}): {str(e)}")
+                skipped_count += 1
+                continue
         
-        sample_trades = []
-        symbols = ['AAPL', 'GOOGL', 'TSLA', 'AMZN', 'MSFT']
-        start_date = datetime.strptime(self.config.start_date, '%Y-%m-%d')
+        print(f"\n第1段階フィルタリング結果:")
+        print(f"- 処理件数: {total_records}")
+        print(f"- 条件適合: {len(first_filtered)}")
+        print(f"- スキップ: {skipped_count}")
         
-        for i in range(20):  # 20件のサンプル取引
-            trade_date = start_date + timedelta(days=random.randint(0, 30))
-            pnl = random.uniform(-200, 500)  # -200から500の範囲でランダムなPnL
-            
-            trade = {
-                'symbol': random.choice(symbols),
-                'side': random.choice(['buy', 'sell']),
-                'qty': random.randint(10, 100),
-                'price': random.uniform(50, 300),
-                'filled_at': trade_date,
-                'order_id': str(uuid.uuid4()),
-                'pnl': pnl  # パフォーマンス計算用
-            }
-            sample_trades.append(trade)
+        # 第2段階のフィルタリング
+        print("\n=== 第2段階フィルタリング ===")
+        print("条件:")
+        print("4. ギャップ率0%以上")
+        print("5. 株価10ドル以上")
+        print("6. 20日平均出来高20万株以上")
+        print(f"7. 過去20日間の価格変化率{self.pre_earnings_change}%以上")
         
-        logger.info(f"サンプル取引データを作成: {len(sample_trades)}件")
-        return sample_trades
+        date_stocks = defaultdict(list)
+        processed_count = 0
+        skipped_count = 0
+        total_second_stage = len(first_filtered)
+        
+        # tqdmを使用してプログレスバーを表示
+        for earning in tqdm(first_filtered, desc="第2段階フィルタリング", total=total_second_stage):
+            try:
+                market_timing = earning.get('before_after_market')
+                trade_date = self.determine_trade_date(
+                    earning['report_date'], 
+                    market_timing
+                )
+                
+                # 銘柄コードから.USを除去
+                symbol = earning['code'][:-3]
+                
+                tqdm.write(f"\n処理中: {symbol}")
+                tqdm.write(f"- サプライズ率: {float(earning['percent']):.1f}%")
+                
+                # 株価データの取得期間を延長（過去20日分のデータを取得するため）
+                stock_data = self.get_historical_data(
+                    symbol,
+                    (datetime.strptime(trade_date, "%Y-%m-%d") - timedelta(days=60)).strftime("%Y-%m-%d"),
+                    (datetime.strptime(trade_date, "%Y-%m-%d") + 
+                     timedelta(days=self.max_holding_days + 30)).strftime("%Y-%m-%d")
+                )
+                
+                if stock_data is None or stock_data.empty:
+                    tqdm.write("- スキップ: 株価データなし")
+                    skipped_count += 1
+                    continue
 
-    def _calculate_trade_pnl(self, trades_df: pd.DataFrame) -> pd.DataFrame:
-        """取引のPnLを計算 - FIFO方式で正確に処理（レガシーコードから移植）"""
-        try:
-            trades_df = trades_df.copy()
-            trades_df['pnl'] = 0.0
-            
-            # 時系列順にソート
-            trades_df = trades_df.sort_values('filled_at').reset_index(drop=True)
-            
-            # FIFO方式でPnL計算
-            positions = {}  # symbol -> [(qty, price, entry_time, trade_idx)]
-            
-            for idx, trade in trades_df.iterrows():
-                symbol = trade['symbol']
-                side = trade['side'].lower()
-                qty = float(trade['qty'])
-                price = float(trade['price'])
-                time = trade['filled_at']
-                
-                if symbol not in positions:
-                    positions[symbol] = []
-                
-                if side == 'buy':
-                    # 買い注文: ポジションキューに追加
-                    positions[symbol].append((qty, price, time, idx))
-                    trades_df.loc[idx, 'pnl'] = 0  # 買いは費用のみ
-                    logger.debug(f"BUY: {symbol} {qty}株 @${price:.2f} on {time.strftime('%Y-%m-%d')} -> PnL: $0.00")
-                    
-                elif side == 'sell' and positions[symbol]:
-                    # 売り注文: FIFO方式で処理
-                    remaining_sell = qty
-                    total_pnl = 0
-                    
-                    while remaining_sell > 0 and positions[symbol]:
-                        buy_qty, buy_price, buy_time, buy_idx = positions[symbol][0]
-                        sell_qty = min(remaining_sell, buy_qty)
-                        
-                        # PnL計算
-                        pnl = (price - buy_price) * sell_qty
-                        total_pnl += pnl
-                        
-                        # ポジションの更新
-                        if sell_qty == buy_qty:
-                            positions[symbol].pop(0)  # 完全に売却
-                        else:
-                            # 一部売却: 残りポジションを更新
-                            positions[symbol][0] = (buy_qty - sell_qty, buy_price, buy_time, buy_idx)
-                        
-                        remaining_sell -= sell_qty
-                    
-                    trades_df.loc[idx, 'pnl'] = total_pnl
-                    logger.debug(f"SELL: {symbol} {qty}株 @${price:.2f} on {time.strftime('%Y-%m-%d')} -> PnL: ${total_pnl:.2f}")
-                
-                elif side == 'sell' and symbol not in positions:
-                    # ポジションがない銘柄での売り（ショート売り）
-                    logger.warning(f"SELL without BUY position: {symbol} {qty}株 @${price:.2f} on {time.strftime('%Y-%m-%d')} -> PnL: $0.00")
-                    trades_df.loc[idx, 'pnl'] = 0
-                
-                elif side == 'sell' and not positions[symbol]:
-                    # ポジションが空の銘柄での売り
-                    logger.warning(f"SELL with empty position: {symbol} {qty}株 @${price:.2f} on {time.strftime('%Y-%m-%d')} -> PnL: $0.00")
-                    trades_df.loc[idx, 'pnl'] = 0
-                
-                else:
-                    # その他の場合
-                    logger.warning(f"Unhandled trade: {side} {symbol} {qty}株 @${price:.2f} on {time.strftime('%Y-%m-%d')} -> PnL: $0.00")
-                    trades_df.loc[idx, 'pnl'] = 0
-            
-            # デバッグ情報をログ出力
-            total_pnl = trades_df['pnl'].sum()
-            positive_trades = len(trades_df[trades_df['pnl'] > 0])
-            negative_trades = len(trades_df[trades_df['pnl'] < 0])
-            zero_trades = len(trades_df[trades_df['pnl'] == 0])
-            
-            logger.info(f"PnL計算が完了しました（FIFO方式）")
-            logger.info(f"総PnL: ${total_pnl:.2f}")
-            logger.info(f"プラス取引: {positive_trades}件, マイナス取引: {negative_trades}件, ゼロ取引: {zero_trades}件")
-            
-            # 主要銘柄のPnL詳細
-            symbol_pnl = trades_df.groupby('symbol')['pnl'].sum().sort_values(ascending=False)
-            logger.info(f"銘柄別PnL上位5位: {dict(symbol_pnl.head())}")
-            
-            return trades_df
-            
-        except Exception as e:
-            logger.error(f"PnL計算エラー: {e}")
-            # フォールバック: ゼロPnLを設定
-            trades_df['pnl'] = 0
-            return trades_df
+                # 過去20日間の価格変化率を計算
+                try:
+                    current_close = stock_data.loc[:trade_date].iloc[-1]['Close']
+                    price_20d_ago = stock_data.loc[:trade_date].iloc[-20]['Close']
+                    price_change = ((current_close - price_20d_ago) / price_20d_ago) * 100
+                    tqdm.write(f"- 過去20日間の価格変化率: {price_change:.1f}%")
+                except (KeyError, IndexError):
+                    tqdm.write("- スキップ: 20日分の価格データなし")
+                    skipped_count += 1
+                    continue
 
-    def calculate_performance_metrics(self, trades_df: pd.DataFrame) -> Dict[str, float]:
+                # 価格変化率のフィルタリング
+                if price_change < self.pre_earnings_change:
+                    tqdm.write(f"- スキップ: 価格変化率が{self.pre_earnings_change}%未満")
+                    skipped_count += 1
+                    continue
+
+                # トレード日のデータを取得
+                try:
+                    trade_date_data = stock_data.loc[trade_date]
+                    prev_day_data = stock_data.loc[:trade_date].iloc[-2]
+                except (KeyError, IndexError):
+                    tqdm.write("- スキップ: トレード日のデータなし")
+                    skipped_count += 1
+                    continue
+                
+                # ギャップ率を計算
+                gap = ((trade_date_data['Open'] - prev_day_data['Close']) / prev_day_data['Close']) * 100
+                
+                # 平均出来高を計算
+                avg_volume = stock_data['Volume'].tail(20).mean()
+                
+                tqdm.write(f"- ギャップ率: {gap:.1f}%")
+                tqdm.write(f"- 株価: ${trade_date_data['Open']:.2f}")
+                tqdm.write(f"- 平均出来高: {avg_volume:,.0f}")
+                
+                # フィルタリング条件のチェック
+                if gap < 0:
+                    tqdm.write("- スキップ: ギャップ率が負")
+                    skipped_count += 1
+                    continue
+                if trade_date_data['Open'] < 10:
+                    tqdm.write("- スキップ: 株価が10ドル未満")
+                    skipped_count += 1
+                    continue
+                if avg_volume < 200000:
+                    tqdm.write("- スキップ: 出来高不足")
+                    skipped_count += 1
+                    continue
+                
+                # データを保存
+                stock_data = {
+                    'code': symbol,
+                    'report_date': earning['report_date'],
+                    'trade_date': trade_date,
+                    'price': trade_date_data['Open'],  # 'entry_price'から'price'に戻す
+                    'entry_price': trade_date_data['Open'],
+                    'prev_close': prev_day_data['Close'],  # prev_closeも追加
+                    'gap': gap,
+                    'volume': trade_date_data['Volume'],
+                    'avg_volume': avg_volume,
+                    'percent': float(earning['percent'])
+                }
+                
+                date_stocks[trade_date].append(stock_data)
+                processed_count += 1
+                tqdm.write("→ 条件適合")
+                
+            except Exception as e:
+                tqdm.write(f"\n銘柄の処理中にエラー ({earning.get('code', 'Unknown')}): {str(e)}")
+                skipped_count += 1
+                continue
+        
+        # 各trade_dateで上位6銘柄を選択
+        selected_stocks = []
+        print("\n日付ごとの選択（上位5銘柄）:")
+        for trade_date in sorted(date_stocks.keys()):
+            # percentで降順ソート
+            date_stocks[trade_date].sort(key=lambda x: float(x['percent']), reverse=True)
+            # 上位5銘柄を選択
+            selected = date_stocks[trade_date][:5]
+            selected_stocks.extend(selected)
+            
+            print(f"\n{trade_date}: {len(selected)}銘柄")
+            for stock in selected:
+                print(f"- {stock['code']}: サプライズ{stock['percent']:.1f}%, "
+                      f"ギャップ{stock['gap']:.1f}%")
+        
+        print(f"\n第2段階フィルタリング結果:")
+        print(f"- 処理件数: {total_second_stage}")
+        print(f"- 条件適合: {processed_count}")
+        print(f"- スキップ: {skipped_count}")
+        print(f"- 最終選択銘柄数: {len(selected_stocks)}")
+        
+        return selected_stocks
+
+
+    def calculate_metrics(self):
         """パフォーマンス指標の計算"""
-        if trades_df.empty:
-            return {}
+        if not self.trades:
+            return None
+        
+        # トレードをDataFrameに変換
+        df = pd.DataFrame(self.trades)
+        
+        # 資産推移の計算
+        df['equity'] = self.initial_capital + df['pnl'].cumsum()
+        
+        # 最大ドローダウンの計算（資産額ベース）
+        df['running_max'] = df['equity'].cummax()
+        df['drawdown'] = (df['running_max'] - df['equity']) / df['running_max'] * 100
+        max_drawdown_pct = df['drawdown'].max()
+        
+        # 基本的な指標を計算
+        total_trades = len(df)
+        winning_trades = len(df[df['pnl_rate'] > 0])  # pnlではなくpnl_rateを使用
+        losing_trades = len(df[df['pnl_rate'] <= 0])
+        
+        # 勝率
+        win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0
+        
+        # 平均損益率
+        avg_win_loss_rate = df['pnl_rate'].mean()
+        
+        # 平均保有期間
+        avg_holding_period = df['holding_period'].mean()
+        
+        # プロフィットファクター
+        total_profit = df[df['pnl'] > 0]['pnl'].sum()
+        total_loss = abs(df[df['pnl'] <= 0]['pnl'].sum())
+        profit_factor = total_profit / total_loss if total_loss != 0 else float('inf')
+        
+        # CAGRの計算
+        start_date = pd.to_datetime(df['entry_date'].min())
+        end_date = pd.to_datetime(df['exit_date'].max())
+        years = (end_date - start_date).days / 365.25
+        final_capital = self.initial_capital + df['pnl'].sum()
+        
+        if years > 0:
+            cagr = ((final_capital / self.initial_capital) ** (1/years) - 1) * 100
+        else:
+            cagr = 0
+        
+        # 終了理由の集計
+        exit_reasons = df['exit_reason'].value_counts()
+        
+        # 年間パフォーマンスの計算を修正
+        df['year'] = pd.to_datetime(df['entry_date']).dt.strftime('%Y')
+        df['cumulative_pnl'] = df['pnl'].cumsum()
+        
+        # 年ごとの損益を計算
+        yearly_pnl = df.groupby('year')['pnl'].sum().reset_index()
+        
+        # 各年の開始時点の資産を計算
+        yearly_returns = []
+        current_capital = self.initial_capital
+        
+        for year in yearly_pnl['year'].values:
+            year_pnl = yearly_pnl[yearly_pnl['year'] == year]['pnl'].values[0]
+            return_pct = (year_pnl / current_capital) * 100
             
-        try:
-            # 基本統計
-            total_trades = len(trades_df)
-            winning_trades = len(trades_df[trades_df['pnl'] > 0])
-            losing_trades = len(trades_df[trades_df['pnl'] < 0])
+            yearly_returns.append({
+                'year': year,
+                'pnl': year_pnl,
+                'return_pct': return_pct,
+                'start_capital': current_capital,
+                'end_capital': current_capital + year_pnl
+            })
             
-            # 勝率
-            win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0
-            
-            # 総収益とPnL
-            total_pnl = trades_df['pnl'].sum()
-            total_return_pct = (total_pnl / self.initial_capital * 100) if self.initial_capital > 0 else 0
-            
-            # 平均損益
-            avg_win = trades_df[trades_df['pnl'] > 0]['pnl'].mean() if winning_trades > 0 else 0
-            avg_loss = abs(trades_df[trades_df['pnl'] < 0]['pnl'].mean()) if losing_trades > 0 else 0
-            
-            # 平均勝敗比率
-            avg_win_loss_rate = (avg_win / avg_loss) if avg_loss > 0 else 0
-            
-            # プロフィットファクター
-            gross_profit = trades_df[trades_df['pnl'] > 0]['pnl'].sum()
-            gross_loss = abs(trades_df[trades_df['pnl'] < 0]['pnl'].sum())
-            profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else 0
-            
-            # 最大ドローダウン
-            equity_curve = trades_df['pnl'].cumsum() + self.initial_capital
-            peak = equity_curve.cummax()
-            drawdown = (equity_curve - peak) / peak * 100
-            max_drawdown_pct = abs(drawdown.min())
-            
-            # 期待値
-            expected_value_pct = (win_rate / 100 * avg_win - (1 - win_rate / 100) * avg_loss) / self.initial_capital * 100
-            
-            # CAGR計算
-            start_date = pd.to_datetime(self.config.start_date)
-            end_date = pd.to_datetime(self.config.end_date)
-            years = (end_date - start_date).days / 365.25
-            final_equity = self.initial_capital + total_pnl
-            cagr = ((final_equity / self.initial_capital) ** (1 / years) - 1) * 100 if years > 0 else 0
-            
-            # カルマー比率
-            calmar_ratio = (cagr / max_drawdown_pct) if max_drawdown_pct > 0 else 0
-            
-            # パレート分析（上位20%の取引が全体利益に占める割合）
-            sorted_pnl = trades_df['pnl'].sort_values(ascending=False)
-            top_20_pct_count = max(1, int(len(sorted_pnl) * 0.2))
-            top_20_pct_profit = sorted_pnl.head(top_20_pct_count).sum()
-            pareto_ratio = (top_20_pct_profit / gross_profit * 100) if gross_profit > 0 else 0
-            
-            return {
-                'total_trades': total_trades,
-                'winning_trades': winning_trades,
-                'losing_trades': losing_trades,
-                'win_rate': win_rate,
-                'total_pnl': total_pnl,
-                'total_return_pct': total_return_pct,
-                'avg_win': avg_win,
-                'avg_loss': avg_loss,
-                'avg_win_loss_rate': avg_win_loss_rate,
-                'profit_factor': profit_factor,
-                'max_drawdown_pct': max_drawdown_pct,
-                'expected_value_pct': expected_value_pct,
-                'cagr': cagr,
-                'calmar_ratio': calmar_ratio,
-                'pareto_ratio': pareto_ratio
+            # 次年の開始資産を更新
+            current_capital += year_pnl
+
+        # Expected Value (期待値)の計算も修正
+        avg_win = df[df['pnl_rate'] > 0]['pnl'].mean()  # 勝ちトレードの平均利益
+        avg_loss = df[df['pnl_rate'] < 0]['pnl'].mean()  # 負けトレードの平均損失
+        win_rate_decimal = winning_trades / total_trades if total_trades > 0 else 0  # 小数での勝率
+        expected_value = (win_rate_decimal * avg_win) + ((1 - win_rate_decimal) * avg_loss)
+        
+        # トレードポジションの平均値を計算
+        avg_position_size = df['entry_price'].mean() * df['shares'].mean()
+        
+        # Expected Valueをポジションサイズに対する割合（パーセンテージ）として計算
+        expected_value_pct = (expected_value / avg_position_size * 100) if avg_position_size > 0 else 0
+        
+        # Calmar Ratioの計算
+        calmar_ratio = abs(cagr / max_drawdown_pct) if max_drawdown_pct != 0 else float('inf')
+        
+        # Pareto Ratio (80/20の法則に基づく指標)の計算
+        sorted_profits = df[df['pnl'] > 0]['pnl'].sort_values(ascending=False)
+        top_20_percent = sorted_profits.head(int(len(sorted_profits) * 0.2))
+        pareto_ratio = (top_20_percent.sum() / sorted_profits.sum() * 100) if not sorted_profits.empty else 0
+        
+        metrics = {
+            'number_of_trades': total_trades,
+            'win_rate': round(win_rate, 2),
+            'avg_win_loss_rate': round(avg_win_loss_rate, 2),
+            'avg_holding_period': round(avg_holding_period, 2),
+            'profit_factor': round(profit_factor, 2),
+            'max_drawdown_pct': round(max_drawdown_pct, 2),
+            'initial_capital': self.initial_capital,
+            'final_capital': round(final_capital, 2),
+            'total_return_pct': round((final_capital - self.initial_capital) / self.initial_capital * 100, 2),
+            'exit_reasons': exit_reasons.to_dict(),
+            'cagr': round(cagr, 2),
+            'yearly_returns': yearly_returns,
+            'expected_value': round(expected_value, 2),
+            'expected_value_pct': round(expected_value_pct, 2),
+            'avg_position_size': round(avg_position_size, 2),
+            'calmar_ratio': round(calmar_ratio, 2),
+            'pareto_ratio': round(pareto_ratio, 1)
+        }
+        
+        # 結果を表示
+        print("\nバックテスト結果:")
+        print(f"Number of trades: {metrics['number_of_trades']}")
+        print(f"Ave win/loss rate: {metrics['avg_win_loss_rate']:.2f}%")
+        print(f"Ave holding period: {metrics['avg_holding_period']} days")
+        print(f"Win rate: {metrics['win_rate']:.1f}%")
+        print(f"Profit factor: {metrics['profit_factor']}")
+        print(f"Max drawdown: {metrics['max_drawdown_pct']:.2f}%")
+        print(f"\n終了理由の内訳:")
+        for reason, count in metrics['exit_reasons'].items():
+            print(f"- {reason}: {count}")
+        print(f"\n資産推移:")
+        print(f"Initial capital: ${metrics['initial_capital']:,.2f}")
+        print(f"Final capital: ${metrics['final_capital']:,.2f}")
+        print(f"Total return: {metrics['total_return_pct']:.2f}%")
+        print(f"Average position size: ${metrics['avg_position_size']:,.2f}")
+        print(f"Expected Value: {metrics['expected_value_pct']:.2f}%")
+        print(f"Calmar Ratio: {metrics['calmar_ratio']:.2f}")
+        print(f"Pareto Ratio: {metrics['pareto_ratio']:.1f}%")
+        
+        return metrics
+
+    def generate_report(self):
+        """トレードレポートの生成"""
+        if not self.trades:
+            print("トレード記録がありません")
+            return
+        
+        # メトリクスを計算
+        metrics = self.calculate_metrics()
+        
+        # トレード記録をCSVファイルに出力
+        output_file = f"reports/alpaca_trade_report_{self.start_date}_{self.end_date}.csv"
+        df = pd.DataFrame(self.trades)
+        df = df[['entry_date', 'exit_date', 'ticker', 'holding_period', 
+                 'entry_price', 'exit_price', 'pnl_rate', 'pnl', 'exit_reason']]
+        df.to_csv(output_file, index=False)
+        print(f"\nトレード記録を {output_file} に保存しました")
+
+    def check_risk_management(self, current_date, current_capital):
+        """
+        過去1ヶ月間の損益が総資産の-risk_limit%を下回っているかチェック
+        """
+        if not self.trades:
+            return True  # トレード履歴がない場合は制限なし
+        
+        # 現在の日付から1ヶ月前の日付を計算
+        one_month_ago = (datetime.strptime(current_date, "%Y-%m-%d") - 
+                        timedelta(days=30)).strftime("%Y-%m-%d")
+        
+        # 過去1ヶ月間の確定したトレードを抽出
+        recent_trades = [
+            trade for trade in self.trades
+            if trade['exit_date'] >= one_month_ago and trade['exit_date'] <= current_date
+        ]
+        
+        if not recent_trades:
+            return True  # 過去1ヶ月間に確定したトレードがない場合は制限なし
+        
+        # 過去1ヶ月間の損益合計を計算
+        total_pnl = sum(trade['pnl'] for trade in recent_trades)
+        
+        # 損益率を計算（現在の総資産に対する割合）
+        pnl_ratio = (total_pnl / current_capital) * 100
+
+        print(f"\nリスク管理チェック ({current_date}):")
+        print(f"- 過去1ヶ月間の損益: ${total_pnl:,.2f}")
+        print(f"- 現在の総資産: ${current_capital:,.2f}")
+        print(f"- 過去1ヶ月間の損益: ${total_pnl:,.2f}")
+        print(f"- 損益率: {pnl_ratio:.2f}%")
+        
+        # -risk_limit%を下回っている場合はFalseを返す
+        if pnl_ratio < -self.risk_limit:
+            print(f"※ 損益率が-{self.risk_limit}%を下回っているため、新規トレードを制限します")
+            return False
+        
+        return True
+
+    def get_text(self, key):
+        """言語に応じたテキストを取得"""
+        texts = {
+            'report_title': {
+                'ja': 'Alpacaトレードトレポート',
+                'en': 'Alpaca Trade Report'
+            },
+            'total_trades': {
+                'ja': '総トレード数',
+                'en': 'Total Trades'
+            },
+            'win_rate': {
+                'ja': '勝率',
+                'en': 'Win Rate'
+            },
+            'avg_pnl': {
+                'ja': '平均損益率',
+                'en': 'Avg. PnL'
+            },
+            'profit_factor': {
+                'ja': 'プロフィットファクター',
+                'en': 'Profit Factor'
+            },
+            'max_drawdown': {
+                'ja': '最大ドローダウン',
+                'en': 'Max Drawdown'
+            },
+            'total_return': {
+                'ja': '総リターン',
+                'en': 'Total Return'
+            },
+            'cumulative_pnl': {
+                'ja': '累計損益推移',
+                'en': 'Cumulative PnL'
+            },
+            'pnl_distribution': {
+                'ja': '損益率分布',
+                'en': 'PnL Distribution'
+            },
+            'yearly_performance': {
+                'ja': '年間パフォーマンス',
+                'en': 'Yearly Performance'
+            },
+            'trade_history': {
+                'ja': 'トレード履歴',
+                'en': 'Trade History'
+            },
+            'symbol': {
+                'ja': '銘柄',
+                'en': 'Symbol'
+            },
+            'entry_date': {
+                'ja': 'エントリー日時',
+                'en': 'Entry Date'
+            },
+            'entry_price': {
+                'ja': 'エントリー価格',
+                'en': 'Entry Price'
+            },
+            'exit_date': {
+                'ja': '決済日時',
+                'en': 'Exit Date'
+            },
+            'exit_price': {
+                'ja': '決済価格',
+                'en': 'Exit Price'
+            },
+            'holding_period': {
+                'ja': '保有期間',
+                'en': 'Holding Period'
+            },
+            'shares': {
+                'ja': '株数',
+                'en': 'Shares'
+            },
+            'pnl_rate': {
+                'ja': '損益率',
+                'en': 'PnL Rate'
+            },
+            'pnl': {
+                'ja': '損益',
+                'en': 'PnL'
+            },
+            'exit_reason': {
+                'ja': '決済理由',
+                'en': 'Exit Reason'
+            },
+            'profit': {
+                'ja': '利益',
+                'en': 'Profit'
+            },
+            'loss': {
+                'ja': '損失',
+                'en': 'Loss'
+            },
+            'date': {
+                'ja': '日時',
+                'en': 'Date'
+            },
+            'pnl_amount': {
+                'ja': '損益 ($)',
+                'en': 'PnL ($)'
+            },
+            'year': {
+                'ja': '年',
+                'en': 'Year'
+            },
+            'return_pct': {
+                'en': 'Return (%)',
+                'ja': 'リターン (%)'
+            },
+            'days': {
+                'ja': '日',
+                'en': ' days'
+            },
+            'number_of_trades': {
+                'ja': '取引数',
+                'en': 'Number of Trades'
+            },
+            'drawdown': {
+                'ja': 'ドローダウン',
+                'en': 'Drawdown'
+            },
+            'drawdown_chart': {
+                'ja': 'ドローダウンチャート',
+                'en': 'Drawdown Chart'
+            },
+            'drawdown_amount': {
+                'ja': 'ドローダウン額 ($)',
+                'en': 'Drawdown Amount ($)'
+            },
+            'drawdown_pct': {
+                'en': 'Drawdown (%)',
+                'ja': 'ドローダウン (%)'
+            },
+            'monthly_performance_heatmap': {
+                'ja': '月次パフォーマンスヒートマップ',
+                'en': 'Monthly Performance Heatmap'
+            },
+            'gap_performance': {
+                'ja': 'ギャップサイズ別パフォーマンス',
+                'en': 'Performance by Gap Size'
+            },
+            'pre_earnings_trend_performance': {
+                'ja': '決算前トレンド別パフォーマンス',
+                'en': 'Performance by Pre-Earnings Trend'
+            },
+            'average_return': {
+                'ja': '平均リターン',
+                'en': 'Average Return'
+            },
+            'number_of_trades_gap': {
+                'ja': 'ギャップサイズ別トレード数',
+                'en': 'Number of Trades by Gap Size'
+            },
+            'gap_size': {
+                'ja': 'ギャップサイズ',
+                'en': 'Gap Size'
+            },
+            'price_change': {
+                'ja': '価格変化率',
+                'en': 'Price Change'
+            },
+            'trend_bin': {
+                'ja': 'トレンドビン',
+                'en': 'Trend Bin'
+            },
+            'trend_performance': {
+                'ja': 'トレンド別パフォーマンス',
+                'en': 'Trend Performance'
+            },
+            'month': {
+                'ja': '月',
+                'en': 'Month'
+            },
+            'analysis_title': {
+                'ja': '詳細分析',
+                'en': 'Detailed Analysis'
+            },
+            'monthly_performance': {
+                'ja': '月次パフォーマンス',
+                'en': 'Monthly Performance'
+            },
+            'gap_analysis': {
+                'ja': 'ギャップ分析',
+                'en': 'Gap Analysis'
+            },
+            'trend_analysis': {
+                'ja': 'トレンド分析',
+                'en': 'Trend Analysis'
+            },
+            'trade_report': {
+                'ja': 'Alpacaトレードレポート',
+                'en': 'Alpaca Trade Report'
+            },
+            'equity_curve': {
+                'ja': '資産推移',
+                'en': 'Equity Curve'
+            },
+            'cumulative_pnl': {
+                'ja': '累積損益',
+                'en': 'Cumulative P&L'
+            },
+            'return_distribution': {
+                'ja': 'リターン分布',
+                'en': 'Return Distribution'
+            },
+            'pnl_distribution': {
+                'ja': '損益分布',
+                'en': 'P&L Distribution'
+            },
+            'yearly_performance_chart': {
+                'ja': '年間パフォーマンス',
+                'en': 'Yearly Performance'
+            },
+            'yearly_performance': {
+                'ja': '年間パフォーマンス',
+                'en': 'Yearly Performance'
+            },
+            'position_value_history': {
+                'ja': 'ポジション金額推移',
+                'en': 'Position Value History'
+            },
+            'sector_performance': {
+                'ja': 'セクター別パフォーマンス',
+                'en': 'Sector Performance'
+            },
+            'industry_performance': {
+                'ja': '業種別パフォーマンス（上位15業種）',
+                'en': 'Industry Performance (Top 15)'
+            },
+            'sector': {
+                'ja': 'セクター',
+                'en': 'Sector'
+            },
+            'industry': {
+                'ja': '業種',
+                'en': 'Industry'
+            },
+            'eps_analysis': {
+                'ja': 'EPSサプライズ分析',
+                'en': 'EPS Surprise Analysis'
+            },
+            'eps_growth_performance': {
+                'ja': 'EPS成長率パフォーマンス',
+                'en': 'EPS Growth Performance'
+            },
+            'eps_acceleration_performance': {
+                'ja': 'EPS成長率加速度パフォーマンス',
+                'en': 'EPS Growth Acceleration Performance'
+            },
+            'eps_surprise': {
+                'ja': 'EPSサプライズ',
+                'en': 'EPS Surprise'
+            },
+            'eps_growth': {
+                'ja': 'EPS成長率',
+                'en': 'EPS Growth'
+            },
+            'eps_acceleration': {
+                'ja': '成長率加速度',
+                'en': 'Growth Acceleration'
+            },
+            'eps_surprise_performance': {
+                'ja': 'EPSサプライズ別パフォーマンス',
+                'en': 'EPS Surprise Performance'
+            },
+            'volume_trend_analysis': {
+                'ja': '出来高トレンド分析',
+                'en': 'Volume Trend Analysis'
+            },
+            'volume_category': {
+                'ja': '出来高カテゴリ',
+                'en': 'Volume Category'
+            },
+            'ma200_analysis': {
+                'ja': 'MA200分析',
+                'en': 'MA200 Analysis'
+            },
+            'ma50_analysis': {
+                'ja': 'MA50分析',
+                'en': 'MA50 Analysis'
+            },
+            'ma200_category': {
+                'ja': 'MA200カテゴリ',
+                'en': 'MA200 Category'
+            },
+            'ma50_category': {
+                'ja': 'MA50カテゴリ',
+                'en': 'MA50 Category'
+            },
+            'expected_value': {
+                'ja': '期待値（%）',
+                'en': 'Expected Value (%)'
+            },
+            'calmar_ratio': {
+                'ja': 'カルマー比率',
+                'en': 'Calmar Ratio'
+            },
+            'pareto_ratio': {
+                'ja': 'パレート比率',
+                'en': 'Pareto Ratio'
             }
-            
-        except Exception as e:
-            logger.error(f"パフォーマンス指標計算エラー: {e}")
-            return {}
+        }
+        return texts[key][self.language]
 
-    def generate_report(self, output_file: str = None):
-        """包括的なレポートを生成"""
-        try:
-            # デフォルトの出力ファイル名を設定（reportsフォルダに出力）
-            if output_file is None:
-                from datetime import datetime
-                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-                output_file = f'reports/trade_report_{timestamp}.html'
-            
-            # reportsディレクトリの存在確認・作成
-            import os
-            reports_dir = os.path.dirname(output_file) if '/' in output_file else 'reports'
-            if not os.path.exists(reports_dir):
-                os.makedirs(reports_dir)
-                logger.info(f"reportsディレクトリを作成しました: {reports_dir}")
-            
-            logger.info("取引レポート生成を開始")
-            
-            # 取引履歴の取得
-            trades = self.get_alpaca_trades()
-            if not trades:
-                logger.warning("取引履歴が見つかりません。サンプルデータでテストレポートを生成します。")
-                # テスト用のサンプルデータを作成
-                trades = self._create_sample_trades()
-                
-            if not trades:
-                logger.error("取引データが利用できません")
-                return
-            
-            # DataFrameに変換
-            trades_df = pd.DataFrame(trades)
-            
-            # PnL計算（実際の取引履歴の場合）
-            if 'pnl' not in trades_df.columns:
-                trades_df = self._calculate_trade_pnl(trades_df)
-            
-            # パフォーマンス指標の計算
-            metrics = self.calculate_performance_metrics(trades_df)
-            
-            # HTMLレポートの生成
-            html_content = self._generate_html_report(trades_df, metrics)
-            
-            # ファイルに保存
-            with open(output_file, 'w', encoding='utf-8') as f:
-                f.write(html_content)
-            
-            logger.info(f"レポートが生成されました: {output_file}")
-            
-            # ブラウザで開く
-            if platform.system() == 'Darwin':  # macOS
-                subprocess.run(['open', output_file])
-            elif platform.system() == 'Windows':
-                os.startfile(output_file)
-            else:  # Linux
-                subprocess.run(['xdg-open', output_file])
-                
-        except Exception as e:
-            logger.error(f"レポート生成エラー: {e}")
-            raise
+    def generate_html_report(self):
+        """HTMLレポートの生成"""
+        if not self.trades:
+            print("トレード記録がありません")
+            return
+        
+        # メトリクスを計算
+        metrics = self.calculate_metrics()
+        
+        # トレード記録をDataFrameに変換
+        df = pd.DataFrame(self.trades)
+        df['entry_date'] = pd.to_datetime(df['entry_date'])
+        df = df.sort_values('entry_date')
+        df['cumulative_pnl'] = df['pnl'].cumsum()
+        
+        # セクター情報を取得して追加
+        print("\nセクター情報の取得中...")
+        sectors = {}
+        
+        for ticker in tqdm(df['ticker'].unique(), desc="セクター情報取得中"):
+            try:
+                # FMPクライアントを使用して企業プロファイルを取得
+                profile_data = self.fmp_client.get_company_profile(ticker)
+                if profile_data:
+                    sectors[ticker] = {
+                        'sector': profile_data.get('sector', 'Unknown'),
+                        'industry': profile_data.get('industry', 'Unknown')
+                    }
+                else:
+                    sectors[ticker] = {
+                        'sector': 'Unknown',
+                        'industry': 'Unknown'
+                    }
+            except Exception as e:
+                print(f"セクター情報の取得エラー ({ticker}): {str(e)}")
+                sectors[ticker] = {
+                    'sector': 'Unknown',
+                    'industry': 'Unknown'
+                }
+        
+        # セクター情報をDataFrameに追加
+        df['sector'] = df['ticker'].map(lambda x: sectors.get(x, {}).get('sector', 'Unknown'))
+        df['industry'] = df['ticker'].map(lambda x: sectors.get(x, {}).get('industry', 'Unknown'))
+        
+        # 分析チャートを生成
+        analysis_charts = self.generate_analysis_charts(df)
+        
+        # 資産推移の計算
+        df['equity'] = self.initial_capital + df['cumulative_pnl']
+        df['equity_pct'] = (df['equity'] / self.initial_capital - 1) * 100
+        
+        # 累積損益チャート
+        fig_equity = go.Figure()
+        fig_equity.add_trace(go.Scatter(
+            x=df['entry_date'],
+            y=df['equity_pct'],
+            mode='lines',
+            name=self.get_text('cumulative_pnl'),
+            line=dict(color=TradeReport.DARK_THEME['profit_color'])
+        ))
+        
+        fig_equity.update_layout(
+            title=self.get_text('equity_curve'),
+            xaxis_title=self.get_text('date'),
+            yaxis_title=self.get_text('return_pct'),
+            template='plotly_dark',
+            paper_bgcolor=TradeReport.DARK_THEME['bg_color'],
+            plot_bgcolor=TradeReport.DARK_THEME['plot_bg_color']
+        )
+        
+        equity_chart = plot(fig_equity, output_type='div', include_plotlyjs=False)
+        
+        # ドローダウンチャート
+        df['running_max'] = df['equity'].cummax()
+        df['drawdown'] = (df['running_max'] - df['equity']) / df['running_max'] * 100
+        
+        fig_drawdown = go.Figure()
+        fig_drawdown.add_trace(go.Scatter(
+            x=df['entry_date'],
+            y=-df['drawdown'],
+            mode='lines',
+            name=self.get_text('drawdown'),
+            line=dict(color=TradeReport.DARK_THEME['loss_color'])
+        ))
+        
+        fig_drawdown.update_layout(
+            title=self.get_text('drawdown_chart'),
+            xaxis_title=self.get_text('date'),
+            yaxis_title=self.get_text('drawdown_pct'),
+            template='plotly_dark',
+            paper_bgcolor=TradeReport.DARK_THEME['bg_color'],
+            plot_bgcolor=TradeReport.DARK_THEME['plot_bg_color']
+        )
+        
+        drawdown_chart = plot(fig_drawdown, output_type='div', include_plotlyjs=False)
+        
+        # リターン分布チャート
+        fig_dist = go.Figure()
 
-    def _generate_html_report(self, trades_df: pd.DataFrame, metrics: Dict[str, float]) -> str:
-        """包括的なHTMLレポートの生成"""
+        # プラスとマイナスのリターンを分けて別々のヒストグラムを作成
+        positive_returns = df[df['pnl_rate'] >= 0]['pnl_rate']
+        negative_returns = df[df['pnl_rate'] < 0]['pnl_rate']
+
+        # マイナスのリターンのヒストグラム
+        fig_dist.add_trace(go.Histogram(
+            x=negative_returns,
+            xbins=dict(
+                start=-10,  # -10%から
+                end=0,      # 0%まで
+                size=2.5    # 2.5%ごとにビンを作成
+            ),
+            name='Negative Returns',
+            marker_color=TradeReport.DARK_THEME['loss_color'],
+            hovertemplate='リターン: %{x:.1f}%<br>取引数: %{y}<extra></extra>'
+        ))
+
+        # プラスのリターンのヒストグラム
+        fig_dist.add_trace(go.Histogram(
+            x=positive_returns,
+            xbins=dict(
+                start=0,    # 0%から
+                end=100,    # 100%まで
+                size=2.5    # 2.5%ごとにビンを作成
+            ),
+            name='Positive Returns',
+            marker_color=TradeReport.DARK_THEME['profit_color'],
+            hovertemplate='リターン: %{x:.1f}%<br>取引数: %{y}<extra></extra>'
+        ))
+
+        fig_dist.update_layout(
+            title=self.get_text('return_distribution'),
+            xaxis_title=self.get_text('return_pct'),
+            yaxis_title=self.get_text('number_of_trades'),
+            template='plotly_dark',
+            paper_bgcolor=TradeReport.DARK_THEME['bg_color'],
+            plot_bgcolor=TradeReport.DARK_THEME['plot_bg_color'],
+            bargap=0.1,
+            showlegend=False,
+            barmode='overlay'  # ヒストグラムを重ねて表示
+        )
         
-        # 取引履歴テーブルの生成
-        trades_table = self._generate_trades_table(trades_df)
+        distribution_chart = plot(fig_dist, output_type='div', include_plotlyjs=False)
+
+        # 年間パフォーマンスチャート
+        yearly_data = pd.DataFrame(metrics['yearly_returns'])
+        fig_yearly = go.Figure()
+        fig_yearly.add_trace(go.Bar(
+            x=yearly_data['year'],
+            y=yearly_data['return_pct'],
+            marker_color=[
+                TradeReport.DARK_THEME['profit_color'] if x >= 0 
+                else TradeReport.DARK_THEME['loss_color'] 
+                for x in yearly_data['return_pct']
+            ]
+        ))
         
-        # Symbol analysis
-        symbol_analysis = self._generate_symbol_analysis(trades_df)
+        fig_yearly.update_layout(
+            title=self.get_text('yearly_performance'),
+            xaxis_title=self.get_text('year'),
+            yaxis_title=self.get_text('return_pct'),
+            template='plotly_dark',
+            paper_bgcolor=TradeReport.DARK_THEME['bg_color'],
+            plot_bgcolor=TradeReport.DARK_THEME['plot_bg_color']
+        )
         
-        # Monthly analysis
-        monthly_analysis = self._generate_monthly_analysis(trades_df)
+        yearly_chart = plot(fig_yearly, output_type='div', include_plotlyjs=False)
         
-        # Plotlyチャート分析
-        plotly_charts = self._generate_plotly_charts(trades_df)
-        
+        # HTMLテンプレート
         html_template = f"""
         <!DOCTYPE html>
         <html>
-        <head>
-            <title>Alpaca Trade Report</title>
-            <meta charset="UTF-8">
-            <style>
-                body {{ 
-                    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
-                    margin: 0; 
-                    padding: 20px; 
-                    background-color: {self.DARK_THEME['bg_color']}; 
-                    color: {self.DARK_THEME['text_color']}; 
-                    line-height: 1.6;
-                }}
-                .container {{ max-width: 1200px; margin: 0 auto; }}
-                .header {{ 
-                    text-align: center; 
-                    margin-bottom: 40px; 
-                    padding: 20px;
-                    background: linear-gradient(135deg, #1e293b 0%, #334155 100%);
-                    border-radius: 10px;
-                }}
-                .header h1 {{ 
-                    margin: 0; 
-                    font-size: 2.5em; 
-                    color: {self.DARK_THEME['line_color']}; 
-                }}
-                .header p {{ 
-                    margin: 10px 0 0 0; 
-                    font-size: 1.2em; 
-                    opacity: 0.8; 
-                }}
-                .section {{ 
-                    margin: 30px 0; 
-                    padding: 20px; 
-                    background-color: {self.DARK_THEME['plot_bg_color']}; 
-                    border-radius: 10px; 
-                    border: 1px solid {self.DARK_THEME['grid_color']};
-                }}
-                .section h2 {{ 
-                    margin-top: 0; 
-                    color: {self.DARK_THEME['line_color']}; 
-                    border-bottom: 2px solid {self.DARK_THEME['grid_color']};
-                    padding-bottom: 10px;
-                }}
-                .metrics-grid {{ 
-                    display: grid; 
-                    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); 
-                    gap: 15px; 
-                }}
-                .metric {{ 
-                    padding: 15px; 
-                    background: linear-gradient(135deg, #374151 0%, #4b5563 100%);
-                    border-radius: 8px; 
-                    border-left: 4px solid {self.DARK_THEME['line_color']};
-                }}
-                .metric-label {{ 
-                    font-size: 0.9em; 
-                    opacity: 0.8; 
-                    margin-bottom: 5px; 
-                }}
-                .metric-value {{ 
-                    font-size: 1.4em; 
-                    font-weight: bold; 
-                }}
-                .positive {{ color: {self.DARK_THEME['profit_color']}; }}
-                .negative {{ color: {self.DARK_THEME['loss_color']}; }}
-                table {{ 
-                    width: 100%; 
-                    border-collapse: collapse; 
-                    margin-top: 15px;
-                }}
-                th, td {{ 
-                    padding: 10px; 
-                    text-align: left; 
-                    border-bottom: 1px solid {self.DARK_THEME['grid_color']}; 
-                }}
-                th {{ 
-                    background-color: {self.DARK_THEME['grid_color']}; 
-                    font-weight: bold;
-                }}
-                tr:hover {{ background-color: rgba(100, 116, 139, 0.1); }}
-                .chart-placeholder {{
-                    height: 300px;
-                    background: linear-gradient(135deg, #374151 0%, #4b5563 100%);
-                    border-radius: 8px;
-                    display: flex;
-                    align-items: center;
-                    justify-content: center;
-                    margin: 20px 0;
-                    border: 2px dashed {self.DARK_THEME['grid_color']};
-                }}
-                .equity-stats {{
-                    display: grid;
-                    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-                    gap: 15px;
-                    margin: 20px 0;
-                    padding: 20px;
-                    background: linear-gradient(135deg, #374151 0%, #4b5563 100%);
-                    border-radius: 8px;
-                }}
-                .stat-item {{
-                    display: flex;
-                    justify-content: space-between;
-                    align-items: center;
-                    padding: 10px;
-                    background-color: rgba(30, 41, 59, 0.5);
-                    border-radius: 6px;
-                }}
-                .stat-label {{
-                    font-weight: 500;
-                    opacity: 0.8;
-                }}
-                .stat-value {{
-                    font-weight: bold;
-                    font-size: 1.1em;
-                }}
-                #equityCurveChart {{
-                    background-color: rgba(30, 41, 59, 0.5);
-                    border-radius: 8px;
-                    max-width: 100%;
-                    height: auto;
-                }}
-                .summary-stats {{
-                    display: grid;
-                    grid-template-columns: 1fr 1fr;
-                    gap: 20px;
-                    margin: 20px 0;
-                }}
-                .warning {{
-                    background-color: rgba(239, 68, 68, 0.1);
-                    border: 1px solid rgba(239, 68, 68, 0.3);
-                    padding: 15px;
-                    border-radius: 8px;
-                    margin: 20px 0;
-                }}
-                .info {{
-                    background-color: rgba(59, 130, 246, 0.1);
-                    border: 1px solid rgba(59, 130, 246, 0.3);
-                    padding: 15px;
-                    border-radius: 8px;
-                    margin: 20px 0;
-                }}
-                .table-container {{
-                    max-height: 400px;
-                    overflow-y: auto;
-                    border: 1px solid #334155;
-                    border-radius: 8px;
-                    margin: 10px 0;
-                }}
-                .sortable-table {{
-                    width: 100%;
-                    border-collapse: collapse;
-                }}
-                .sortable-table th {{
-                    position: sticky;
-                    top: 0;
-                    background-color: {self.DARK_THEME['bg_color']};
-                    border-bottom: 2px solid #334155;
-                    padding: 12px 8px;
-                    text-align: left;
-                    font-weight: bold;
-                    color: {self.DARK_THEME['line_color']};
-                    user-select: none;
-                }}
-                .sortable-table th:hover {{
-                    background-color: #334155;
-                }}
-                .sortable-table td {{
-                    padding: 10px 8px;
-                    border-bottom: 1px solid rgba(51, 65, 85, 0.3);
-                }}
-                .sortable-table tr:hover {{
-                    background-color: rgba(51, 65, 85, 0.3);
-                }}
-            </style>
-        </head>
-        <body>
-            <div class="container">
-                <div class="header">
-                    <h1>📊 Alpaca Trading Performance Report</h1>
-                    <p>Analysis Period: {self.config.start_date} ～ {self.config.end_date}</p>
-                    <p>Initial Capital: ${self.initial_capital:,.2f} | Account Type: {self.config.account_type.upper()}</p>
+            <head>
+                <title>Alpaca Trade Report</title>
+                <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+                <meta charset="UTF-8">
+                <style>
+                    body {{
+                        background-color: {TradeReport.DARK_THEME['bg_color']};
+                        color: {TradeReport.DARK_THEME['text_color']};
+                        font-family: Arial, sans-serif;
+                        margin: 20px;
+                    }}
+                    .metrics-container {{
+                        display: grid;
+                        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+                        gap: 20px;
+                        margin: 20px 0;
+                    }}
+                    .metric-card {{
+                        background-color: {TradeReport.DARK_THEME['plot_bg_color']};
+                        padding: 15px;
+                        border-radius: 8px;
+                        text-align: center;
+                    }}
+                    .metric-value {{
+                        font-size: 24px;
+                        font-weight: bold;
+                        margin: 10px 0;
+                    }}
+                    .chart-container {{
+                        margin: 20px 0;
+                        background-color: {TradeReport.DARK_THEME['plot_bg_color']};
+                        padding: 20px;
+                        border-radius: 8px;
+                    }}
+                    .trades-table {{
+                        width: 100%;
+                        border-collapse: collapse;
+                        margin: 20px 0;
+                        background-color: {TradeReport.DARK_THEME['plot_bg_color']};
+                        border-radius: 8px;
+                    }}
+                    .trades-table th, .trades-table td {{
+                        padding: 12px;
+                        text-align: left;
+                        border-bottom: 1px solid {TradeReport.DARK_THEME['grid_color']};
+                    }}
+                    .trades-table th {{
+                        background-color: {TradeReport.DARK_THEME['bg_color']};
+                        color: {TradeReport.DARK_THEME['text_color']};
+                        cursor: pointer;
+                    }}
+                    .profit {{
+                        color: {TradeReport.DARK_THEME['profit_color']};
+                    }}
+                    .loss {{
+                        color: {TradeReport.DARK_THEME['loss_color']};
+                    }}
+                    .asc::after {{
+                        content: " ▲";
+                    }}
+                    .desc::after {{
+                        content: " ▼";
+                    }}
+                </style>
+            </head>
+            <body>
+                <h1>{self.get_text('trade_report')}</h1>
+                
+                <div class="metrics-container">
+                    {self._generate_metrics_html(df)}
                 </div>
                 
-                <div class="section">
-                    <h2>🎯 Key Performance Metrics</h2>
-                    <div class="metrics-grid">
-                        <div class="metric">
-                            <div class="metric-label">Total Trades</div>
-                            <div class="metric-value">{metrics.get('total_trades', 0)}</div>
-                        </div>
-                        <div class="metric">
-                            <div class="metric-label">Win Rate</div>
-                            <div class="metric-value {'positive' if metrics.get('win_rate', 0) > 50 else 'negative'}">{metrics.get('win_rate', 0):.1f}%</div>
-                        </div>
-                        <div class="metric">
-                            <div class="metric-label">Total Return</div>
-                            <div class="metric-value {'positive' if metrics.get('total_return_pct', 0) > 0 else 'negative'}">{metrics.get('total_return_pct', 0):.2f}%</div>
-                        </div>
-                        <div class="metric">
-                            <div class="metric-label">CAGR (Annualized Return)</div>
-                            <div class="metric-value {'positive' if metrics.get('cagr', 0) > 0 else 'negative'}">{metrics.get('cagr', 0):.2f}%</div>
-                        </div>
-                        <div class="metric">
-                            <div class="metric-label">Profit Factor</div>
-                            <div class="metric-value {'positive' if metrics.get('profit_factor', 0) > 1 else 'negative'}">{metrics.get('profit_factor', 0):.2f}</div>
-                        </div>
-                        <div class="metric">
-                            <div class="metric-label">Max Drawdown</div>
-                            <div class="metric-value negative">{metrics.get('max_drawdown_pct', 0):.2f}%</div>
-                        </div>
-                        <div class="metric">
-                            <div class="metric-label">Avg Win</div>
-                            <div class="metric-value positive">${metrics.get('avg_win', 0):.2f}</div>
-                        </div>
-                        <div class="metric">
-                            <div class="metric-label">Avg Loss</div>
-                            <div class="metric-value negative">${metrics.get('avg_loss', 0):.2f}</div>
-                        </div>
-                        <div class="metric">
-                            <div class="metric-label">Win/Loss Ratio</div>
-                            <div class="metric-value">{metrics.get('avg_win_loss_rate', 0):.2f}</div>
-                        </div>
-                        <div class="metric">
-                            <div class="metric-label">Expected Value</div>
-                            <div class="metric-value {'positive' if metrics.get('expected_value_pct', 0) > 0 else 'negative'}">{metrics.get('expected_value_pct', 0):.2f}%</div>
-                        </div>
-                        <div class="metric">
-                            <div class="metric-label">Calmar Ratio</div>
-                            <div class="metric-value">{metrics.get('calmar_ratio', 0):.2f}</div>
-                        </div>
-                        <div class="metric">
-                            <div class="metric-label">Pareto Ratio</div>
-                            <div class="metric-value">{metrics.get('pareto_ratio', 0):.1f}%</div>
-                        </div>
+                <div class="chart-container">
+                    <h2>{self.get_text('equity_curve')}</h2>
+                    {equity_chart}
+                </div>
+                
+                <div class="chart-container">
+                    <h2>{self.get_text('drawdown_chart')}</h2>
+                    {drawdown_chart}
+                </div>
+                
+                <div class="chart-container">
+                    <h2>{self.get_text('return_distribution')}</h2>
+                    {distribution_chart}
+                </div>
+                
+                <div class="chart-container">
+                    <h2>{self.get_text('yearly_performance_chart')}</h2>
+                    {yearly_chart}
+                </div>
+                                
+                <div class="chart-container">
+                    <h2>{self.get_text('analysis_title')}</h2>
+                    
+                    <div class="analysis-section">
+                        <h3>{self.get_text('monthly_performance')}</h3>
+                        {analysis_charts['monthly']}
                     </div>
-                </div>
+                    
+                    <div class="analysis-section">
+                        <h3>{self.get_text('sector_performance')}</h3>
+                        {analysis_charts['sector']}
+                    </div>
+                    
+                    <div class="analysis-section">
+                        <h3>{self.get_text('industry_performance')}</h3>
+                        {analysis_charts['industry']}
+                    </div>
+                    
+                    <div class="analysis-section">
+                        <h3>{self.get_text('gap_analysis')}</h3>
+                        {analysis_charts['gap']}
+                    </div>
+                    
+                    <div class="analysis-section">
+                        <h3>{self.get_text('trend_analysis')}</h3>
+                        {analysis_charts['trend']}
+                    </div>
 
-                <div class="section">
-                    <h2>📈 Equity Curve & Detailed Analysis</h2>
-                    {plotly_charts}
+                    <div class="analysis-section">
+                        <h3>{self.get_text('eps_analysis')}</h3>
+                        {analysis_charts['eps_surprise']}
+                    </div>
+                    
+                    <div class="analysis-section">
+                        <h3>{self.get_text('eps_growth_performance')}</h3>
+                        {analysis_charts['eps_growth']}
+                    </div>
+                    
+                    <div class="analysis-section">
+                        <h3>{self.get_text('eps_acceleration_performance')}</h3>
+                        {analysis_charts['eps_acceleration']}
+                    </div>
+                    <div class="chart-container">
+                        <h3>{self.get_text('volume_trend_analysis')}</h3>
+                        {analysis_charts['volume']}
+                    </div>
+                    
+                    <div class="chart-container">
+                        <h3>{self.get_text('ma200_analysis')}</h3>
+                        {analysis_charts['ma200']}
+                    </div>
+                    
+                    <div class="chart-container">
+                        <h3>{self.get_text('ma50_analysis')}</h3>
+                        {analysis_charts['ma50']}
+                    </div>                
                 </div>
+                
+                <div class="trades-container">
+                    <h2>{self.get_text('trade_history')}</h2>
+                    {self._generate_trades_table_html()}
+                </div>
+                
+                <script>
+                    // テーブルソート機能
+                    document.querySelectorAll('.trades-table th').forEach(th => th.addEventListener('click', (() => {{
+                        const table = th.closest('table');
+                        const tbody = table.querySelector('tbody');
+                        const rows = Array.from(tbody.querySelectorAll('tr'));
+                        const index = Array.from(th.parentNode.children).indexOf(th);
+                        
+                        // 数値かどうかを判定（$や%を除去して判定）
+                        const isNumeric = !isNaN(rows[0].children[index].textContent.replace(/[^0-9.-]+/g,""));
+                        
+                        // ソート方向の決定（現在の状態を反転）
+                        const direction = th.classList.contains('asc') ? -1 : 1;
+                        
+                        // ソート処理
+                        rows.sort((a, b) => {{
+                            const aValue = a.children[index].textContent.replace(/[^0-9.-]+/g,"");
+                            const bValue = b.children[index].textContent.replace(/[^0-9.-]+/g,"");
+                            
+                            if (isNumeric) {{
+                                return direction * (parseFloat(aValue) - parseFloat(bValue));
+                            }} else {{
+                                return direction * aValue.localeCompare(bValue);
+                            }}
+                        }});
+                        
+                        // ソート方向インジケータの更新
+                        th.closest('tr').querySelectorAll('th').forEach(el => {{
+                            el.classList.remove('asc', 'desc');
+                        }});
+                        th.classList.toggle('asc', direction === 1);
+                        th.classList.toggle('desc', direction === -1);
+                        
+                        // テーブルの更新
+                        tbody.append(...rows);
+                    }})));
+                </script>
+                
 
-                <div class="section">
-                    <h2>📊 Symbol Analysis</h2>
-                    {symbol_analysis}
-                </div>
-
-                <div class="section">
-                    <h2>📅 Monthly Analysis</h2>
-                    {monthly_analysis}
-                </div>
-
-                <div class="section">
-                    <h2>📋 Detailed Trade History</h2>
-                    {trades_table}
-                </div>
-
-                <div class="section">
-                    <h2>⚠️ Risk Analysis & Important Notes</h2>
-                    {self._generate_risk_analysis(trades_df, metrics)}
-                </div>
-
-                <div class="info">
-                    <h3>📌 Report Generation Info</h3>
-                    <p>Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
-                    <p>Data Source: Alpaca Trading API</p>
-                    <p>This report is automatically generated. Please consult other sources when making investment decisions.</p>
-                </div>
-            </div>
-        </body>
+            </body>
         </html>
         """
-        return html_template
 
-    def _generate_trades_table(self, trades_df: pd.DataFrame) -> str:
-        """Generate scrollable and sortable trade history table"""
-        if trades_df.empty:
-            return "<p>No trading data available.</p>"
+        # HTMLファイルの保存
+        output_file = f"reports/alpaca_trade_report_{self.start_date}_{self.end_date}.html"
+        with open(output_file, 'w', encoding='utf-8') as f:
+            f.write(html_template)
         
-        # Display all trades, sorted by fill time (newest first)
-        all_trades = trades_df.copy()
+        print(f"\nHTMLレポートを {output_file} に保存しました")
         
-        table_rows = ""
-        for _, trade in all_trades.iterrows():
-            pnl_class = "positive" if trade.get('pnl', 0) > 0 else "negative"
-            filled_at = trade.get('filled_at', 'N/A')
-            if hasattr(filled_at, 'strftime'):
-                filled_at = filled_at.strftime('%Y-%m-%d %H:%M')
-            
-            table_rows += f"""
-            <tr>
-                <td>{trade.get('symbol', 'N/A')}</td>
-                <td>{trade.get('side', 'N/A').upper()}</td>
-                <td>{trade.get('qty', 0)}</td>
-                <td data-sort="{trade.get('price', 0)}">${trade.get('price', 0):.2f}</td>
-                <td class="{pnl_class}" data-sort="{trade.get('pnl', 0)}">${trade.get('pnl', 0):.2f}</td>
-                <td data-sort="{filled_at}">{filled_at}</td>
-            </tr>
-            """
-        
-        return f"""
-        <div class="table-container">
-            <table id="trades-table" class="sortable-table">
-                <thead>
-                    <tr>
-                        <th onclick="sortTable(0, 'trades-table')" style="cursor: pointer;">Symbol ↕</th>
-                        <th onclick="sortTable(1, 'trades-table')" style="cursor: pointer;">Side ↕</th>
-                        <th onclick="sortTable(2, 'trades-table')" style="cursor: pointer;">Quantity ↕</th>
-                        <th onclick="sortTable(3, 'trades-table')" style="cursor: pointer;">Price ↕</th>
-                        <th onclick="sortTable(4, 'trades-table')" style="cursor: pointer;">PnL ↕</th>
-                        <th onclick="sortTable(5, 'trades-table')" style="cursor: pointer;">Fill Time ↕</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {table_rows}
-                </tbody>
-            </table>
-        </div>
-        <p><small>Showing all {len(all_trades)} trades. Click column headers to sort.</small></p>
-        
-        <script>
-        let sortDirection = {{}};
-        
-        function sortTable(columnIndex, tableId) {{
-            const table = document.getElementById(tableId);
-            const tbody = table.querySelector('tbody');
-            const rows = Array.from(tbody.querySelectorAll('tr'));
-            
-            // Toggle sort direction
-            const direction = sortDirection[columnIndex] || 'asc';
-            sortDirection[columnIndex] = direction === 'asc' ? 'desc' : 'asc';
-            
-            rows.sort((a, b) => {{
-                const aCell = a.cells[columnIndex];
-                const bCell = b.cells[columnIndex];
-                
-                // Use data-sort attribute if available, otherwise use text content
-                let aValue = aCell.getAttribute('data-sort') || aCell.textContent.trim();
-                let bValue = bCell.getAttribute('data-sort') || bCell.textContent.trim();
-                
-                // Convert to numbers if possible
-                const aNum = parseFloat(aValue.replace(/[$,]/g, ''));
-                const bNum = parseFloat(bValue.replace(/[$,]/g, ''));
-                
-                if (!isNaN(aNum) && !isNaN(bNum)) {{
-                    aValue = aNum;
-                    bValue = bNum;
-                }}
-                
-                if (direction === 'asc') {{
-                    return aValue > bValue ? 1 : aValue < bValue ? -1 : 0;
-                }} else {{
-                    return aValue < bValue ? 1 : aValue > bValue ? -1 : 0;
-                }}
-            }});
-            
-            // Clear tbody and append sorted rows
-            tbody.innerHTML = '';
-            rows.forEach(row => tbody.appendChild(row));
-        }}
-        </script>
-        """
+        # ブラウザでレポートを開く
+        webbrowser.open('file://' + os.path.realpath(output_file))
 
-    def _generate_symbol_analysis(self, trades_df: pd.DataFrame) -> str:
-        """Generate symbol analysis"""
-        if trades_df.empty:
-            return "<p>取引データがありません。</p>"
+    def analyze_performance(self):
+        """バックテストの詳細分析を実行"""
+        if not self.trades:
+            print("分析するトレードデータがありません")
+            return
         
-        try:
-            # 銘柄別の統計
-            symbol_stats = trades_df.groupby('symbol').agg({
-                'pnl': ['sum', 'count', 'mean'],
-                'qty': 'sum'
+        # トレードデータをDataFrameに変換
+        df = pd.DataFrame(self.trades)
+        df['entry_date'] = pd.to_datetime(df['entry_date'])
+        df['exit_date'] = pd.to_datetime(df['exit_date'])
+        
+        # 月次パフォーマンス分析
+        self._analyze_monthly_performance(df)
+        
+        # セクター・業種分析
+        self._analyze_sector_performance(df)
+        
+        # EPS分析を追加
+        self._analyze_eps_performance(df)
+        
+        # ギャップ分析
+        self._analyze_gap_performance(df)
+        
+        # トレンド分析
+        self._analyze_pre_earnings_trend(df)
+        
+        # ブレイクアウト分析
+        self._analyze_breakout_performance(df)
+
+    def _analyze_monthly_performance(self, df):
+        """月次パフォーマンスの分析"""
+        print("\n=== 月次パフォーマンス分析 ===")
+        
+        # 月と年を抽出
+        df['year'] = df['entry_date'].dt.year
+        df['month'] = df['entry_date'].dt.month
+        
+        # 月次の集計
+        monthly_stats = df.groupby(['year', 'month']).agg({
+            'pnl_rate': ['mean', 'std', 'count'],
+            'pnl': 'sum'
+        }).round(2)
+        
+        # 月ごとの統計
+        monthly_summary = df.groupby('month').agg({
+            'pnl_rate': ['mean', 'std', 'count'],
+            'pnl': 'sum'
+        }).round(2)
+        
+        print("\n月別平均パフォーマンス:")
+        for month in range(1, 13):
+            if month in monthly_summary.index:
+                stats = monthly_summary.loc[month]
+                print(f"\n{month}月:")
+                print(f"- 平均リターン: {stats[('pnl_rate', 'mean')]:.2f}%")
+                print(f"- 標準偏差: {stats[('pnl_rate', 'std')]:.2f}%")
+                print(f"- トレード数: {stats[('pnl_rate', 'count')]}")
+                print(f"- 累計損益: ${stats[('pnl', 'sum')]:,.2f}")
+
+    def _analyze_sector_performance(self, df):
+        """セクター・業種別パフォーマンスの分析"""
+        print("\n=== セクター・業種別パフォーマンス分析 ===")
+        
+        # FMPからセクター情報を取得
+        sectors = {}
+        for ticker in tqdm(df['ticker'].unique(), desc="セクター情報取得中"):
+            try:
+                # FMPクライアントを使用して企業プロファイルを取得
+                profile_data = self.fmp_client.get_company_profile(ticker)
+                if profile_data:
+                    sectors[ticker] = {
+                        'sector': profile_data.get('sector', 'Unknown'),
+                        'industry': profile_data.get('industry', 'Unknown')
+                    }
+                else:
+                    sectors[ticker] = {
+                        'sector': 'Unknown',
+                        'industry': 'Unknown'
+                    }
+            except Exception as e:
+                print(f"セクター情報の取得エラー ({ticker}): {str(e)}")
+                sectors[ticker] = {
+                    'sector': 'Unknown',
+                    'industry': 'Unknown'
+                }
+        
+        # セクター情報をDataFrameに追加
+        df['sector'] = df['ticker'].map(lambda x: sectors.get(x, {}).get('sector', 'Unknown'))
+        df['industry'] = df['ticker'].map(lambda x: sectors.get(x, {}).get('industry', 'Unknown'))
+        
+        # セクター別の統計
+        sector_stats = df.groupby('sector').agg({
+            'pnl_rate': ['mean', 'std', 'count'],
+            'pnl': 'sum'
+        }).round(2)
+        
+        print("\nセクター別パフォーマンス:")
+        for sector in sector_stats.index:
+            stats = sector_stats.loc[sector]
+            print(f"\n{sector}:")
+            print(f"- 平均リターン: {stats[('pnl_rate', 'mean')]:.2f}%")
+            print(f"- 標準偏差: {stats[('pnl_rate', 'std')]:.2f}%")
+            print(f"- トレード数: {stats[('pnl_rate', 'count')]}")
+            print(f"- 累計損益: ${stats[('pnl', 'sum')]:,.2f}")
+
+    def _analyze_eps_performance(self, df):
+        """EPS関連のパフォーマンス分析"""
+        print("\n=== EPS分析 ===")
+        
+        # entry_dateを確実に日付型に変換
+        df['entry_date'] = pd.to_datetime(df['entry_date'])
+        
+        # EPSデータの取得
+        print("\nEPSデータの取得中...")
+        eps_data = {}
+        for ticker, group in df.groupby('ticker'):
+            try:
+                # 各銘柄の最新のエントリー日を使用
+                latest_entry = group['entry_date'].max()
+                eps_info = self._get_eps_data(ticker, latest_entry)
+                if eps_info:
+                    eps_data[ticker] = eps_info
+                
+            except Exception as e:
+                print(f"エラー ({ticker}): {str(e)}")
+                continue
+        
+        if not eps_data:
+            print("警告: EPSデータが取得できませんでした")
+            return df
+        
+        # EPSデータをDataFrameに追加
+        df['eps_surprise'] = df['ticker'].map(lambda x: eps_data.get(x, {}).get('eps_surprise'))
+        df['eps_yoy_growth'] = df['ticker'].map(lambda x: eps_data.get(x, {}).get('eps_yoy_growth'))
+        df['growth_acceleration'] = df['ticker'].map(lambda x: eps_data.get(x, {}).get('growth_acceleration'))
+        
+        # カテゴリの作成
+        df = self._categorize_eps_metrics(df)
+        
+        # 各カテゴリごとの分析を実行
+        categories = [
+            ('surprise_category', 'EPSサプライズ別'),
+            ('growth_category', 'EPS成長率別'),
+            ('growth_acceleration_category', 'EPS成長率加速度別')
+        ]
+        
+        for category, title in categories:
+            stats = df.groupby(category).agg({
+                'pnl_rate': ['mean', 'std', 'count'],
+                'pnl': ['sum', lambda x: (x > 0).mean() * 100]  # 合計と勝率
             }).round(2)
             
-            # フラット化
-            symbol_stats.columns = ['total_pnl', 'trade_count', 'avg_pnl', 'total_qty']
-            symbol_stats = symbol_stats.sort_values('total_pnl', ascending=False)
-            
-            table_rows = ""
-            for symbol, stats in symbol_stats.iterrows():  # Show all symbols
-                pnl_class = "positive" if stats['total_pnl'] > 0 else "negative"
-                table_rows += f"""
-                <tr>
-                    <td>{symbol}</td>
-                    <td data-sort="{stats['trade_count']}">{stats['trade_count']}</td>
-                    <td data-sort="{stats['total_qty']}">{stats['total_qty']}</td>
-                    <td class="{pnl_class}" data-sort="{stats['total_pnl']}">${stats['total_pnl']:.2f}</td>
-                    <td class="{pnl_class}" data-sort="{stats['avg_pnl']}">${stats['avg_pnl']:.2f}</td>
-                </tr>
-                """
-            
-            return f"""
-            <div class="table-container">
-                <table id="symbol-table" class="sortable-table">
-                    <thead>
-                        <tr>
-                            <th onclick="sortTable(0, 'symbol-table')" style="cursor: pointer;">Symbol ↕</th>
-                            <th onclick="sortTable(1, 'symbol-table')" style="cursor: pointer;">Trade Count ↕</th>
-                            <th onclick="sortTable(2, 'symbol-table')" style="cursor: pointer;">Total Quantity ↕</th>
-                            <th onclick="sortTable(3, 'symbol-table')" style="cursor: pointer;">Total PnL ↕</th>
-                            <th onclick="sortTable(4, 'symbol-table')" style="cursor: pointer;">Average PnL ↕</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {table_rows}
-                    </tbody>
-                </table>
-            </div>
-            <p><small>Showing all {len(symbol_stats)} symbols. Click column headers to sort.</small></p>
-            
-            <script>
-            // Reuse the same sortTable function for symbol table
-            if (typeof sortTable === 'undefined') {{
-                let sortDirection = {{}};
-                
-                function sortTable(columnIndex, tableId) {{
-                    const table = document.getElementById(tableId);
-                    const tbody = table.querySelector('tbody');
-                    const rows = Array.from(tbody.querySelectorAll('tr'));
-                    
-                    // Toggle sort direction
-                    const direction = sortDirection[tableId + '_' + columnIndex] || 'asc';
-                    sortDirection[tableId + '_' + columnIndex] = direction === 'asc' ? 'desc' : 'asc';
-                    
-                    rows.sort((a, b) => {{
-                        const aCell = a.cells[columnIndex];
-                        const bCell = b.cells[columnIndex];
-                        
-                        // Use data-sort attribute if available, otherwise use text content
-                        let aValue = aCell.getAttribute('data-sort') || aCell.textContent.trim();
-                        let bValue = bCell.getAttribute('data-sort') || bCell.textContent.trim();
-                        
-                        // Convert to numbers if possible
-                        const aNum = parseFloat(aValue.replace(/[$,]/g, ''));
-                        const bNum = parseFloat(bValue.replace(/[$,]/g, ''));
-                        
-                        if (!isNaN(aNum) && !isNaN(bNum)) {{
-                            aValue = aNum;
-                            bValue = bNum;
-                        }}
-                        
-                        if (direction === 'asc') {{
-                            return aValue > bValue ? 1 : aValue < bValue ? -1 : 0;
-                        }} else {{
-                            return aValue < bValue ? 1 : aValue > bValue ? -1 : 0;
-                        }}
-                    }});
-                    
-                    // Clear tbody and append sorted rows
-                    tbody.innerHTML = '';
-                    rows.forEach(row => tbody.appendChild(row));
-                }}
-            }}
-            </script>
-            """
-        except Exception as e:
-            return f"<p>Error generating symbol analysis: {e}</p>"
-
-    def _generate_monthly_analysis(self, trades_df: pd.DataFrame) -> str:
-        """Generate monthly analysis"""
-        if trades_df.empty:
-            return "<p>No trading data available.</p>"
+            print(f"\n{title}パフォーマンス:")
+            for cat in stats.index:
+                if pd.isna(cat):  # NaN/NAの場合はスキップ
+                    continue
+                s = stats.loc[cat]
+                print(f"\n{cat}:")
+                print(f"- 平均リターン: {s[('pnl_rate', 'mean')]:.2f}%")
+                print(f"- 標準偏差: {s[('pnl_rate', 'std')]:.2f}%")
+                print(f"- トレード数: {s[('pnl_rate', 'count')]}")
+                print(f"- 勝率: {s[('pnl', '<lambda>')]:.1f}%")
+                print(f"- 累計損益: ${s[('pnl', 'sum')]:,.2f}")
         
-        try:
-            # filled_atカラムをdatetimeに変換
-            trades_df_copy = trades_df.copy()
-            trades_df_copy['filled_at'] = pd.to_datetime(trades_df_copy['filled_at'])
-            trades_df_copy['month'] = trades_df_copy['filled_at'].dt.to_period('M')
-            
-            # 月次統計
-            monthly_stats = trades_df_copy.groupby('month').agg({
-                'pnl': ['sum', 'count', 'mean'],
-            }).round(2)
-            
-            monthly_stats.columns = ['total_pnl', 'trade_count', 'avg_pnl']
-            
-            table_rows = ""
-            for month, stats in monthly_stats.iterrows():
-                pnl_class = "positive" if stats['total_pnl'] > 0 else "negative"
-                table_rows += f"""
-                <tr>
-                    <td>{month}</td>
-                    <td>{stats['trade_count']}</td>
-                    <td class="{pnl_class}">${stats['total_pnl']:.2f}</td>
-                    <td class="{pnl_class}">${stats['avg_pnl']:.2f}</td>
-                </tr>
-                """
-            
-            return f"""
-            <table>
-                <thead>
-                    <tr>
-                        <th>Month</th>
-                        <th>Trade Count</th>
-                        <th>Total PnL</th>
-                        <th>Average PnL</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {table_rows}
-                </tbody>
-            </table>
-            """
-        except Exception as e:
-            return f"<p>月次分析の生成中にエラーが発生しました: {e}</p>"
-
-    def _generate_plotly_charts(self, trades_df: pd.DataFrame) -> str:
-        """Plotlyを使用した高度なチャート分析を生成"""
-        if trades_df.empty:
-            return "<p>取引データがありません。</p>"
+        # 相関分析
+        correlations = {
+            'EPSサプライズ': df['eps_surprise'].corr(df['pnl_rate']),
+            'EPS成長率': df['eps_yoy_growth'].corr(df['pnl_rate']),
+            '成長率加速度': df['growth_acceleration'].corr(df['pnl_rate'])
+        }
         
-        try:
-            # 基本的なチャートを生成
-            basic_charts = self._generate_basic_charts(trades_df)
-            
-            # 詳細分析チャートを生成  
-            advanced_charts = self._generate_advanced_analysis_charts(trades_df)
-            
-            return basic_charts + "\n" + advanced_charts
-            
-        except Exception as e:
-            return f"<p>チャート生成エラー: {e}</p>"
-
-    def _generate_basic_charts(self, trades_df: pd.DataFrame) -> str:
-        """Generate basic charts"""
-        # Sort trade data by date
-        trades_df_sorted = trades_df.copy()
-        trades_df_sorted['filled_at'] = pd.to_datetime(trades_df_sorted['filled_at'])
-        trades_df_sorted = trades_df_sorted.sort_values('filled_at')
-        
-        # Calculate cumulative PnL and returns
-        trades_df_sorted['cumulative_pnl'] = trades_df_sorted['pnl'].cumsum()
-        trades_df_sorted['cumulative_return'] = (trades_df_sorted['cumulative_pnl'] / self.initial_capital * 100)
-        
-        # Calculate drawdown
-        running_max = trades_df_sorted['cumulative_return'].cummax()
-        trades_df_sorted['drawdown'] = trades_df_sorted['cumulative_return'] - running_max
-        
-        # Create daily time series from start date to latest trade
-        start_date = pd.to_datetime(self.config.start_date).tz_localize(None)  # Remove timezone
-        if not trades_df_sorted.empty:
-            end_date = trades_df_sorted['filled_at'].max()
-            if end_date.tz is not None:
-                end_date = end_date.tz_localize(None)  # Remove timezone
-        else:
-            end_date = pd.Timestamp.now().tz_localize(None)  # Remove timezone
-        
-        # Create daily date range
-        date_range = pd.date_range(start=start_date, end=end_date, freq='D')
-        
-        # Initialize daily series
-        daily_returns = pd.Series(0.0, index=date_range)
-        daily_drawdown = pd.Series(0.0, index=date_range)
-        
-        # Fill in trade data
-        if not trades_df_sorted.empty:
-            for _, trade in trades_df_sorted.iterrows():
-                trade_datetime = trade['filled_at']
-                if trade_datetime.tz is not None:
-                    trade_datetime = trade_datetime.tz_localize(None)  # Remove timezone
-                trade_date = trade_datetime.normalize()  # Get date without time
-                # Forward fill from trade date onwards
-                mask = date_range >= trade_date
-                daily_returns.loc[mask] = trade['cumulative_return']
-                daily_drawdown.loc[mask] = trade['drawdown']
-        
-        # Convert to lists for plotting
-        dates = [d.strftime('%Y-%m-%d') for d in date_range]
-        returns = daily_returns.tolist()
-        drawdowns = daily_drawdown.tolist()
-        
-        # 勝ち負け分析
-        wins = trades_df_sorted[trades_df_sorted['pnl'] > 0]
-        losses = trades_df_sorted[trades_df_sorted['pnl'] < 0]
-        
-        # Symbol PnL
-        symbol_pnl = trades_df_sorted.groupby('symbol')['pnl'].sum().sort_values(ascending=False)
-        top_symbols = symbol_pnl.head(10)
-        
-        # 月次分析
-        trades_df_sorted['month'] = trades_df_sorted['filled_at'].dt.to_period('M').astype(str)
-        monthly_pnl = trades_df_sorted.groupby('month')['pnl'].sum()
-        
-        basic_charts_html = []
-        
-        # Performance Summary
-        summary_html = f"""
-        <div class="equity-stats">
-            <div class="stat-item">
-                <span class="stat-label">Total Trades:</span>
-                <span class="stat-value">{len(trades_df_sorted)}</span>
-            </div>
-            <div class="stat-item">
-                <span class="stat-label">Win Rate:</span>
-                <span class="stat-value {'positive' if len(wins)/len(trades_df_sorted) > 0.5 else 'negative'}">{len(wins)/len(trades_df_sorted)*100:.1f}%</span>
-            </div>
-            <div class="stat-item">
-                <span class="stat-label">Total Return:</span>
-                <span class="stat-value {'positive' if returns[-1] > 0 else 'negative'}" >{returns[-1]:.2f}%</span>
-            </div>
-            <div class="stat-item">
-                <span class="stat-label">Max Drawdown:</span>
-                <span class="stat-value negative">{min(drawdowns):.2f}%</span>
-            </div>
-            <div class="stat-item">
-                <span class="stat-label">Total PnL:</span>
-                <span class="stat-value {'positive' if sum(trades_df_sorted['pnl']) > 0 else 'negative'}">${sum(trades_df_sorted['pnl']):.2f}</span>
-            </div>
-        </div>
-        """
-        basic_charts_html.append(self._wrap_chart_section("Performance Summary", summary_html, "performance-summary"))
-        
-        # Equity Curve
-        equity_chart = f"""
-        <div id="equity-curve-chart" style="height: 400px;"></div>
-        <script>
-            var equityData = [{{
-                x: {dates},
-                y: {returns},
-                type: 'scatter',
-                mode: 'lines',
-                name: 'Cumulative Return (%)',
-                line: {{color: '{self.DARK_THEME['profit_color']}', width: 2}}
-            }}];
-            
-            var equityLayout = {{
-                title: {{text: 'Equity Curve (Cumulative Return)', font: {{color: '{self.DARK_THEME['text_color']}'}}}},
-                paper_bgcolor: '{self.DARK_THEME['bg_color']}',
-                plot_bgcolor: '{self.DARK_THEME['plot_bg_color']}',
-                font: {{color: '{self.DARK_THEME['text_color']}'}},
-                xaxis: {{title: 'Date', gridcolor: '{self.DARK_THEME['grid_color']}'}},
-                yaxis: {{title: 'Return (%)', gridcolor: '{self.DARK_THEME['grid_color']}'}}
-            }};
-            
-            Plotly.newPlot('equity-curve-chart', equityData, equityLayout, {{responsive: true}});
-        </script>
-        """
-        basic_charts_html.append(self._wrap_chart_section("Equity Curve", equity_chart, "equity-curve"))
-        
-        # Drawdown Chart
-        drawdown_chart = f"""
-        <div id="drawdown-chart" style="height: 300px;"></div>
-        <script>
-            var drawdownData = [{{
-                x: {dates},
-                y: {drawdowns},
-                type: 'scatter',
-                mode: 'lines',
-                name: 'Drawdown (%)',
-                line: {{color: '{self.DARK_THEME['loss_color']}', width: 2}},
-                fill: 'tonexty'
-            }}];
-            
-            var drawdownLayout = {{
-                title: {{text: 'Drawdown Progression', font: {{color: '{self.DARK_THEME['text_color']}'}}}},
-                paper_bgcolor: '{self.DARK_THEME['bg_color']}',
-                plot_bgcolor: '{self.DARK_THEME['plot_bg_color']}',
-                font: {{color: '{self.DARK_THEME['text_color']}'}},
-                xaxis: {{title: 'Date', gridcolor: '{self.DARK_THEME['grid_color']}'}},
-                yaxis: {{title: 'Drawdown (%)', gridcolor: '{self.DARK_THEME['grid_color']}'}}
-            }};
-            
-            Plotly.newPlot('drawdown-chart', drawdownData, drawdownLayout, {{responsive: true}});
-        </script>
-        """
-        basic_charts_html.append(self._wrap_chart_section("Drawdown", drawdown_chart, "drawdown"))
-        
-        # Symbol PnL Chart
-        symbol_values = self._to_json_safe(list(top_symbols.values))
-        symbol_names = self._to_json_safe(list(top_symbols.index))
-        symbol_colors = ['#22c55e' if x > 0 else '#ef4444' for x in top_symbols.values]
-        
-        symbol_chart = f"""
-        <div id="symbol-pnl-chart" style="height: 400px;"></div>
-        <script>
-            var symbolData = [{{
-                x: {symbol_values},
-                y: {symbol_names},
-                type: 'bar',
-                orientation: 'h',
-                name: 'Symbol PnL',
-                marker: {{
-                    color: {symbol_colors}
-                }}
-            }}];
-            
-            var symbolLayout = {{
-                title: {{text: 'Top 10 Symbols by PnL', font: {{color: '{self.DARK_THEME['text_color']}'}}}},
-                paper_bgcolor: '{self.DARK_THEME['bg_color']}',
-                plot_bgcolor: '{self.DARK_THEME['plot_bg_color']}',
-                font: {{color: '{self.DARK_THEME['text_color']}'}},
-                xaxis: {{title: 'PnL ($)', gridcolor: '{self.DARK_THEME['grid_color']}'}},
-                yaxis: {{title: 'Symbol', gridcolor: '{self.DARK_THEME['grid_color']}'}}
-            }};
-            
-            Plotly.newPlot('symbol-pnl-chart', symbolData, symbolLayout, {{responsive: true}});
-        </script>
-        """
-        basic_charts_html.append(self._wrap_chart_section("Top Symbols by PnL", symbol_chart, "symbol-pnl"))
-        
-        # Monthly PnL Chart
-        monthly_months = self._to_json_safe(list(monthly_pnl.index))
-        monthly_values = self._to_json_safe(list(monthly_pnl.values))
-        monthly_colors = ['#22c55e' if x > 0 else '#ef4444' for x in monthly_pnl.values]
-        
-        monthly_chart = f"""
-        <div id="monthly-pnl-chart" style="height: 300px;"></div>
-        <script>
-            var monthlyData = [{{
-                x: {monthly_months},
-                y: {monthly_values},
-                type: 'bar',
-                name: 'Monthly PnL',
-                marker: {{
-                    color: {monthly_colors}
-                }}
-            }}];
-            
-            var monthlyLayout = {{
-                title: {{text: 'Monthly PnL Progression', font: {{color: '{self.DARK_THEME['text_color']}'}}}},
-                paper_bgcolor: '{self.DARK_THEME['bg_color']}',
-                plot_bgcolor: '{self.DARK_THEME['plot_bg_color']}',
-                font: {{color: '{self.DARK_THEME['text_color']}'}},
-                xaxis: {{title: 'Month', gridcolor: '{self.DARK_THEME['grid_color']}'}},
-                yaxis: {{title: 'PnL ($)', gridcolor: '{self.DARK_THEME['grid_color']}'}}
-            }};
-            
-            Plotly.newPlot('monthly-pnl-chart', monthlyData, monthlyLayout, {{responsive: true}});
-        </script>
-        """
-        basic_charts_html.append(self._wrap_chart_section("Monthly PnL", monthly_chart, "monthly-pnl"))
-        
-        # Plotly script include
-        plotly_script = '<script src="https://cdn.plot.ly/plotly-latest.min.js"></script>'
-        
-        return plotly_script + '\n'.join(basic_charts_html)
-
-    def _to_json_safe(self, data):
-        """NumPy型をJSON安全な型に変換"""
-        import json
-        import numpy as np
-        
-        if isinstance(data, np.ndarray):
-            return data.tolist()
-        elif isinstance(data, (np.int64, np.int32, np.int16, np.int8)):
-            return int(data)
-        elif isinstance(data, (np.float64, np.float32, np.float16)):
-            return float(data)
-        elif isinstance(data, list):
-            return [self._to_json_safe(item) for item in data]
-        elif isinstance(data, dict):
-            return {key: self._to_json_safe(value) for key, value in data.items()}
-        else:
-            return data
-
-    def _generate_advanced_analysis_charts(self, trades_df: pd.DataFrame) -> str:
-        """詳細分析チャートを生成"""
-        if trades_df.empty:
-            return ""
-        
-        try:
-            # サンプル詳細データを生成（現実の実装では外部データソースから取得）
-            trades_with_analysis = self._add_analysis_data(trades_df)
-            
-            charts_html = []
-            
-            # 1. Return Distribution Analysis
-            return_dist_chart = self._create_return_distribution_chart(trades_with_analysis)
-            charts_html.append(self._wrap_chart_section("Return Distribution", return_dist_chart, "return-distribution-chart"))
-            
-            # 2. Monthly Performance Heatmap  
-            monthly_heatmap = self._create_monthly_heatmap(trades_with_analysis)
-            charts_html.append(self._wrap_chart_section("Monthly Performance Heatmap", monthly_heatmap, "monthly-heatmap-chart"))
-            
-            # 3. Sector Performance (if sector data available)
-            sector_chart = self._create_sector_performance_chart(trades_with_analysis)
-            charts_html.append(self._wrap_chart_section("Sector Performance", sector_chart, "sector-performance-chart"))
-            
-            # 4. Industry Performance (Top 15)
-            industry_chart = self._create_industry_performance_chart(trades_with_analysis)
-            charts_html.append(self._wrap_chart_section("Industry Performance (Top 15)", industry_chart, "industry-performance-chart"))
-            
-            # 5. Performance by Gap Size
-            gap_chart = self._create_gap_performance_chart(trades_with_analysis)
-            charts_html.append(self._wrap_chart_section("Performance by Gap Size", gap_chart, "gap-performance-chart"))
-            
-            # 6. Pre-Earnings Trend Analysis
-            pre_earnings_chart = self._create_pre_earnings_chart(trades_with_analysis) 
-            charts_html.append(self._wrap_chart_section("Pre-Earnings Trend Analysis", pre_earnings_chart, "pre-earnings-chart"))
-            
-            # 7. Volume Trend Analysis
-            volume_chart = self._create_volume_trend_chart(trades_with_analysis)
-            charts_html.append(self._wrap_chart_section("Volume Trend Analysis", volume_chart, "volume-trend-chart"))
-            
-            # 8. MA Analysis
-            ma_chart = self._create_ma_analysis_chart(trades_with_analysis)
-            charts_html.append(self._wrap_chart_section("Moving Average Analysis", ma_chart, "ma-analysis-chart"))
-            
-            # 9. Market Cap Performance
-            mcap_chart = self._create_market_cap_chart(trades_with_analysis)
-            charts_html.append(self._wrap_chart_section("Market Cap Performance", mcap_chart, "market-cap-chart"))
-            
-            # 10. Price Range Analysis
-            price_range_chart = self._create_price_range_chart(trades_with_analysis)
-            charts_html.append(self._wrap_chart_section("Price Range Analysis", price_range_chart, "price-range-chart"))
-            
-            return '\n'.join(charts_html)
-            
-        except Exception as e:
-            logger.error(f"詳細分析チャート生成エラー: {e}")
-            return f"<p>詳細分析チャート生成エラー: {e}</p>"
-
-    def _wrap_chart_section(self, title: str, chart_html: str, chart_id: str) -> str:
-        """チャートセクションをHTMLでラップ"""
-        return f"""
-        <div class="section">
-            <h3 style="color: {self.DARK_THEME['line_color']};">{title}</h3>
-            <div style="margin: 10px 0;">
-                {chart_html}
-            </div>
-        </div>
-        """
-
-    def _add_analysis_data(self, trades_df: pd.DataFrame) -> pd.DataFrame:
-        """分析用データを追加（サンプル実装）"""
-        df = trades_df.copy()
-        
-        # サンプルデータを追加（現実の実装では外部APIから取得）
-        import random
-        import numpy as np
-        
-        n_trades = len(df)
-        
-        # セクター・業界情報（サンプル）
-        sectors = ['Technology', 'Healthcare', 'Finance', 'Consumer', 'Energy', 'Industrial']
-        industries = ['Software', 'Biotechnology', 'Banking', 'Retail', 'Oil&Gas', 'Manufacturing', 
-                     'Semiconductors', 'Pharmaceuticals', 'Insurance', 'Automotive']
-        
-        df['sector'] = [random.choice(sectors) for _ in range(n_trades)]
-        df['industry'] = [random.choice(industries) for _ in range(n_trades)]
-        
-        # ギャップサイズ（サンプル）
-        df['gap_size'] = np.random.normal(2.0, 3.0, n_trades)
-        
-        # 決算前トレンド（サンプル）  
-        df['pre_earnings_trend'] = np.random.normal(0, 8, n_trades)
-        
-        # ボリューム変化率（サンプル）
-        df['volume_change'] = np.random.normal(20, 40, n_trades)
-        
-        # MA比率（サンプル）
-        df['price_to_ma50'] = np.random.normal(1.02, 0.1, n_trades)
-        df['price_to_ma200'] = np.random.normal(1.05, 0.15, n_trades)
-        
-        # 時価総額カテゴリ（サンプル）
-        mcap_categories = ['Large Cap', 'Mid Cap', 'Small Cap', 'Micro Cap']
-        df['market_cap_category'] = [random.choice(mcap_categories) for _ in range(n_trades)]
-        
-        # 価格帯カテゴリ（サンプル）  
-        price_categories = ['High Price', 'Mid Price', 'Low Price']
-        df['price_category'] = [random.choice(price_categories) for _ in range(n_trades)]
-        
-        # リターン率を計算
-        try:
-            # PnLベースのリターン率計算（簡易版）
-            df['return_pct'] = (df['pnl'] / self.initial_capital) * 100
-        except:
-            # フォールバック：ランダムなリターン率
-            df['return_pct'] = np.random.normal(2, 10, n_trades)
+        print("\n=== パフォーマンスとの相関 ===")
+        for metric, corr in correlations.items():
+            if not pd.isna(corr):  # NaN/NAでない場合のみ表示
+                print(f"{metric}との相関係数: {corr:.3f}")
         
         return df
 
-    def _create_return_distribution_chart(self, df: pd.DataFrame) -> str:
-        """Generate return distribution chart"""
-        returns = df['return_pct'].dropna()
-        
-        positive_returns = returns[returns > 0]
-        negative_returns = returns[returns <= 0]
-        
-        script = f"""
-        <div id="return-dist-chart" style="width: 100%; height: 400px;"></div>
-        <script>
-        var trace1 = {{
-            x: {positive_returns.tolist()},
-            type: 'histogram',
-            name: 'Positive Returns',
-            marker: {{color: '{self.DARK_THEME['profit_color']}', opacity: 0.7}},
-            nbinsx: 20
-        }};
-        
-        var trace2 = {{
-            x: {negative_returns.tolist()},
-            type: 'histogram', 
-            name: 'Negative Returns',
-            marker: {{color: '{self.DARK_THEME['loss_color']}', opacity: 0.7}},
-            nbinsx: 20
-        }};
-        
-        var layout = {{
-            title: {{text: 'Return Distribution', font: {{color: '{self.DARK_THEME['text_color']}'}}}},
-            paper_bgcolor: '{self.DARK_THEME['bg_color']}',
-            plot_bgcolor: '{self.DARK_THEME['plot_bg_color']}',
-            font: {{color: '{self.DARK_THEME['text_color']}'}},
-            xaxis: {{title: 'Return (%)', gridcolor: '{self.DARK_THEME['grid_color']}'}},
-            yaxis: {{title: 'Frequency', gridcolor: '{self.DARK_THEME['grid_color']}'}},
-            barmode: 'overlay'
-        }};
-        
-        Plotly.newPlot('return-dist-chart', [trace1, trace2], layout, {{responsive: true}});
-        </script>
-        """
-        return script
+    def _get_eps_data(self, ticker, entry_date):
+        """FMPからEPSデータを取得（シンプル版）"""
+        try:
+            # FMPクライアントを使用してearnings surprisesデータを取得
+            earnings_data = self.fmp_client.get_earnings_surprises(ticker, limit=80)
+            
+            if not earnings_data:
+                print(f"警告: {ticker}の決算データが見つかりません")
+                return None
+            
+            # エントリー日を基準に日付範囲を設定（過去2年分）
+            entry_dt = pd.to_datetime(entry_date)
+            from_date = entry_dt - timedelta(days=730)  # エントリー日の2年前
+            
+            # 日付でフィルタリング
+            filtered_data = []
+            for e in earnings_data:
+                earning_date = pd.to_datetime(e['date'])
+                if from_date <= earning_date <= entry_dt:
+                    filtered_data.append(e)
+            
+            if not filtered_data:
+                print(f"警告: {ticker}の期間内決算データが見つかりません")
+                return None
+            
+            # 日付でソート（新しい順）
+            filtered_data.sort(key=lambda x: x['date'], reverse=True)
+            
+            # 四半期データの抽出（8四半期分を取得）
+            quarters = []
+            for e in filtered_data:
+                quarter_date = pd.to_datetime(e['date'])
+                if len(quarters) == 0 or (quarters[-1]['date'] - quarter_date).days > 60:
+                    quarters.append({
+                        'date': quarter_date,
+                        'eps': float(e['actualEarningResult']) if e['actualEarningResult'] is not None else None,
+                        'estimate': float(e['estimatedEarning']) if e['estimatedEarning'] is not None else None
+                    })
+                if len(quarters) >= 8:  # 8四半期分取得したら終了
+                    break
+            
+            if len(quarters) < 8:
+                print(f"警告: 十分な四半期データがありません（{len(quarters)}四半期分）")
+                return None
+            
+            # EPSサプライズの計算（最新四半期）
+            current_quarter = quarters[0]
+            eps_surprise = None
+            if (current_quarter['eps'] is not None and 
+                current_quarter['estimate'] is not None and 
+                abs(current_quarter['estimate']) > 0.0001):
+                eps_surprise = ((current_quarter['eps'] - current_quarter['estimate']) / 
+                              abs(current_quarter['estimate'])) * 100
+            
+            # YoY成長率の計算（最新四半期）
+            current_growth = None
+            if (current_quarter['eps'] is not None and 
+                quarters[4]['eps'] is not None and 
+                abs(quarters[4]['eps']) > 0.0001):
+                current_growth = ((current_quarter['eps'] - quarters[4]['eps']) / 
+                                abs(quarters[4]['eps'])) * 100
+            
+            # 前四半期のYoY成長率
+            prev_growth = None
+            if (quarters[1]['eps'] is not None and 
+                quarters[5]['eps'] is not None and 
+                abs(quarters[5]['eps']) > 0.0001):
+                prev_growth = ((quarters[1]['eps'] - quarters[5]['eps']) / 
+                             abs(quarters[5]['eps'])) * 100
+            
+            # 成長率の加速度
+            growth_acceleration = None
+            if current_growth is not None and prev_growth is not None:
+                growth_acceleration = current_growth - prev_growth
+            
+            return {
+                'eps_surprise': eps_surprise,
+                'eps_yoy_growth': current_growth,
+                'prev_quarter_growth': prev_growth,
+                'growth_acceleration': growth_acceleration
+            }
+            
+        except Exception as e:
+            print(f"EPSデータの取得エラー ({ticker}): {str(e)}")
+            return None
 
-    def _create_monthly_heatmap(self, df: pd.DataFrame) -> str:
-        """Generate monthly performance heatmap"""
-        import json
+    def _categorize_eps_metrics(self, df):
+        """EPSメトリクスをカテゴリに分類"""
+        # NoneをNaNに変換
+        df['eps_surprise'] = pd.to_numeric(df['eps_surprise'], errors='coerce')
+        df['eps_yoy_growth'] = pd.to_numeric(df['eps_yoy_growth'], errors='coerce')
+        df['growth_acceleration'] = pd.to_numeric(df['growth_acceleration'], errors='coerce')
         
-        # 月次データを準備
-        df['date'] = pd.to_datetime(df['filled_at'])
-        df['year'] = df['date'].dt.year
-        df['month'] = df['date'].dt.month
+        # サプライズのカテゴリ化
+        df['surprise_category'] = pd.cut(
+            df['eps_surprise'],
+            bins=[-np.inf, -20, -10, 0, 10, 20, np.inf],
+            labels=['<-20%', '-20~-10%', '-10~0%', '0~10%', '10~20%', '>20%'],
+            include_lowest=True
+        )
         
-        # 月次リターンを集計
-        monthly_data = df.groupby(['year', 'month'])['return_pct'].mean().reset_index()
+        # YoY成長率のカテゴリ化
+        df['growth_category'] = pd.cut(
+            df['eps_yoy_growth'],
+            bins=[-np.inf, -50, -25, 0, 25, 50, np.inf],
+            labels=['<-50%', '-50~-25%', '-25~0%', '0~25%', '25~50%', '>50%'],
+            include_lowest=True
+        )
         
-        # ヒートマップ用のマトリックスを作成
-        years = sorted(monthly_data['year'].unique())
-        months = list(range(1, 13))
-        month_names = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 
-                      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+        # 成長率の加速度をカテゴリ化
+        df['growth_acceleration_category'] = pd.cut(
+            df['growth_acceleration'],
+            bins=[-np.inf, -30, -15, 0, 15, 30, np.inf],
+            labels=['Strong Deceleration', 'Deceleration', 'Mild Deceleration', 
+                    'Mild Acceleration', 'Acceleration', 'Strong Acceleration'],
+            include_lowest=True
+        )
         
-        z_data = []
-        text_data = []  # For hover text
+        # カテゴリの順序を設定
+        for col, categories in [
+            ('surprise_category', ['<-20%', '-20~-10%', '-10~0%', '0~10%', '10~20%', '>20%']),
+            ('growth_category', ['<-50%', '-50~-25%', '-25~0%', '0~25%', '25~50%', '>50%']),
+            ('growth_acceleration_category', ['Strong Deceleration', 'Deceleration', 'Mild Deceleration',
+                                            'Mild Acceleration', 'Acceleration', 'Strong Acceleration'])
+        ]:
+            df[col] = pd.Categorical(df[col], categories=categories, ordered=True)
         
-        for year in years:
-            year_data = []
-            year_text = []
-            for month in months:
-                value = monthly_data[(monthly_data['year'] == year) & 
-                                   (monthly_data['month'] == month)]['return_pct']
-                if len(value) > 0:
-                    val = float(value.iloc[0])  # Convert NumPy type to Python float
-                    year_data.append(val)
-                    year_text.append(f"{val:.2f}%")
+        return df
+
+    def _analyze_gap_performance(self, df):
+        """ギャップの大きさによるパフォーマンス分析"""
+        print("\n=== ギャップサイズ別パフォーマンス分析 ===")
+        
+        # ギャップ率でビンを作成
+        df['gap_bin'] = pd.cut(df['gap'], 
+                              bins=[-np.inf, 5, 10, 15, 20, np.inf],
+                              labels=['0-5%', '5-10%', '10-15%', '15-20%', '20%+'])
+        
+        # ギャップサイズ別の統計
+        gap_stats = df.groupby('gap_bin').agg({
+            'pnl_rate': ['mean', 'std', 'count'],
+            'pnl': 'sum'
+        }).round(2)
+        
+        # 勝率の計算
+        win_rates = df.groupby('gap_bin').apply(
+            lambda x: (x['pnl'] > 0).mean() * 100
+        ).round(2)
+        
+        print("\nギャップサイズ別パフォーマンス:")
+        for gap_bin in gap_stats.index:
+            stats = gap_stats.loc[gap_bin]
+            print(f"\n{gap_bin}:")
+            print(f"- 平均リターン: {stats[('pnl_rate', 'mean')]:.2f}%")
+            print(f"- 標準偏差: {stats[('pnl_rate', 'std')]:.2f}%")
+            print(f"- トレード数: {stats[('pnl_rate', 'count')]}")
+            print(f"- 勝率: {win_rates[gap_bin]:.1f}%")
+            print(f"- 累計損益: ${stats[('pnl', 'sum')]:,.2f}")
+
+    def _analyze_pre_earnings_trend(self, df):
+        """決算前のトレンド分析"""
+        print("\n=== 決算前トレンド分析 ===")
+        
+        # 各トレードの決算前20日間のトレンドを分析
+        trends = []
+        for _, trade in df.iterrows():
+            # 決算前の株価データを取得
+            pre_earnings_start = (pd.to_datetime(trade['entry_date']) - 
+                                timedelta(days=30)).strftime('%Y-%m-%d')
+            stock_data = self.get_historical_data(
+                trade['ticker'],
+                pre_earnings_start,
+                trade['entry_date']
+            )
+            
+            if stock_data is not None and len(stock_data) >= 20:
+                # 21日移動平均線を計算
+                stock_data['MA21'] = stock_data['Close'].rolling(window=21).mean()
+                
+                # 20日間の価格変化率を計算
+                price_change = ((stock_data['Close'].iloc[-1] - stock_data['Close'].iloc[-20]) / 
+                              stock_data['Close'].iloc[-20] * 100)
+                
+                # 20日移動平均との位置関係
+                ma_position = 'above' if stock_data['Close'].iloc[-1] > stock_data['MA21'].iloc[-1] else 'below'
+                
+                trends.append({
+                    'ticker': trade['ticker'],
+                    'entry_date': trade['entry_date'],
+                    'pre_earnings_change': price_change,
+                    'ma_position': ma_position,
+                    'pnl_rate': trade['pnl_rate'],
+                    'pnl': trade['pnl']  # pnlを追加
+                })
+        
+        trend_df = pd.DataFrame(trends)
+        
+        if not trend_df.empty:
+            # トレンドの強さでビンを作成
+            trend_df['trend_bin'] = pd.cut(trend_df['pre_earnings_change'],
+                                         bins=[-np.inf, -20, -10, 0, 10, 20, np.inf],
+                                         labels=['<-20%', '-20~-10%', '-10~0%', '0~10%', '10~20%', '>20%'])
+            
+            # トレンド別の統計
+            trend_stats = trend_df.groupby('trend_bin').agg({
+                'pnl_rate': ['mean', 'std', 'count']
+            }).round(2)
+            
+            print("\nトレンド別パフォーマンス:")
+            for trend_bin in trend_stats.index:
+                stats = trend_stats.loc[trend_bin]
+                print(f"\n{trend_bin}:")
+                print(f"- 平均リターン: {stats[('pnl_rate', 'mean')]:.2f}%")
+                print(f"- 標準偏差: {stats[('pnl_rate', 'std')]:.2f}%")
+                print(f"- トレード数: {stats[('pnl_rate', 'count')]}")
+        
+        return trend_df  # DataFrameを返す
+
+    def _analyze_breakout_performance(self, df):
+        """ブレイクアウトパターンの分析"""
+        print("\n=== ブレイクアウトパターン分析 ===")
+        
+        breakouts = []
+        for _, trade in df.iterrows():
+            # 決算前の株価データを取得
+            pre_earnings_start = (pd.to_datetime(trade['entry_date']) - 
+                                timedelta(days=60)).strftime('%Y-%m-%d')
+            stock_data = self.get_historical_data(
+                trade['ticker'],
+                pre_earnings_start,
+                trade['entry_date']
+            )
+            
+            if stock_data is not None and len(stock_data) >= 20:
+                # 20日高値を計算
+                high_20d = stock_data['High'].rolling(window=20).max().iloc[-2]  # 直前日までの20日高値
+                
+                # ブレイクアウトの判定
+                is_breakout = trade['entry_price'] > high_20d
+                breakout_percent = ((trade['entry_price'] - high_20d) / high_20d * 100) if is_breakout else 0
+                
+                breakouts.append({
+                    'ticker': trade['ticker'],
+                    'entry_date': trade['entry_date'],
+                    'is_breakout': is_breakout,
+                    'breakout_percent': breakout_percent,
+                    'pnl_rate': trade['pnl_rate']
+                })
+        
+        breakout_df = pd.DataFrame(breakouts)
+        
+        # ブレイクアウトの有無による統計
+        breakout_stats = breakout_df.groupby('is_breakout').agg({
+            'pnl_rate': ['mean', 'std', 'count']
+        }).round(2)
+        
+        # ブレイクアウトの大きさによる分析
+        breakout_df['breakout_bin'] = pd.cut(breakout_df['breakout_percent'],
+                                            bins=[-np.inf, 0, 2, 5, 10, np.inf],
+                                            labels=['No Breakout', '0-2%', '2-5%', '5-10%', '>10%'])
+        
+        size_stats = breakout_df.groupby('breakout_bin').agg({
+            'pnl_rate': ['mean', 'std', 'count']
+        }).round(2)
+        
+        print("\nブレイクアウトパターン別パフォーマンス:")
+        for breakout_bin in size_stats.index:
+            stats = size_stats.loc[breakout_bin]
+            print(f"\n{breakout_bin}:")
+            print(f"- 平均リターン: {stats[('pnl_rate', 'mean')]:.2f}%")
+            print(f"- 標準偏差: {stats[('pnl_rate', 'std')]:.2f}%")
+            print(f"- トレード数: {stats[('pnl_rate', 'count')]}")
+
+    def generate_analysis_charts(self, df):
+        """分析チャートの生成"""
+        charts = {}
+        
+        # EPSデータの取得と追加
+        print("\nEPSデータの取得中...")
+        eps_data = {}
+        
+        # 全トレードのユニークな(ticker, entry_date)の組み合わせを取得
+        trade_keys = df[['ticker', 'entry_date']].drop_duplicates()
+        total_trades = len(trade_keys)
+        
+        # tqdmを使用して進捗バーを表示
+        for _, row in tqdm(trade_keys.iterrows(), 
+                          total=total_trades,
+                          desc="EPSデータ取得",
+                          ncols=100):
+            ticker = row['ticker']
+            entry_date = row['entry_date']
+            trade_key = (ticker, entry_date.strftime('%Y-%m-%d'))
+            
+            try:
+                eps_info = self._get_eps_data(ticker, entry_date)
+                
+                if eps_info:
+                    eps_data[trade_key] = eps_info
+                    tqdm.write(f"{ticker} ({entry_date.strftime('%Y-%m-%d')}): EPSデータ取得成功")
                 else:
-                    year_data.append(None)
-                    year_text.append("")
-            z_data.append(year_data)
-            text_data.append(year_text)
-        
-        # Convert to JSON-safe format
-        z_data_json = json.dumps(z_data)
-        text_data_json = json.dumps(text_data)
-        years_json = json.dumps([int(y) for y in years])  # Convert NumPy type to int
-        
-        script = f"""
-        <div id="monthly-heatmap" style="width: 100%; height: 400px;"></div>
-        <script>
-        var trace = {{
-            z: {z_data_json},
-            x: {json.dumps(month_names)},
-            y: {years_json},
-            text: {text_data_json},
-            texttemplate: "%{{text}}",
-            textfont: {{color: "white", size: 12}},
-            type: 'heatmap',
-            colorscale: [
-                [0, '{self.DARK_THEME['loss_color']}'],
-                [0.5, '{self.DARK_THEME['bg_color']}'],
-                [1, '{self.DARK_THEME['profit_color']}']
-            ],
-            showscale: true,
-            colorbar: {{
-                title: "Return (%)",
-                titlefont: {{color: '{self.DARK_THEME['text_color']}'}},
-                tickfont: {{color: '{self.DARK_THEME['text_color']}'}}
-            }}
-        }};
-        
-        var layout = {{
-            title: {{text: 'Monthly Performance Heatmap', font: {{color: '{self.DARK_THEME['text_color']}', size: 18}}}},
-            paper_bgcolor: '{self.DARK_THEME['bg_color']}',
-            plot_bgcolor: '{self.DARK_THEME['plot_bg_color']}',
-            font: {{color: '{self.DARK_THEME['text_color']}'}},
-            xaxis: {{
-                title: 'Month', 
-                gridcolor: '{self.DARK_THEME['grid_color']}',
-                tickfont: {{color: '{self.DARK_THEME['text_color']}'}}
-            }},
-            yaxis: {{
-                title: 'Year', 
-                gridcolor: '{self.DARK_THEME['grid_color']}',
-                tickfont: {{color: '{self.DARK_THEME['text_color']}'}}
-            }},
-            width: null,
-            height: 400
-        }};
-        
-        Plotly.newPlot('monthly-heatmap', [trace], layout, {{responsive: true}});
-        </script>
-        """
-        return script
+                    tqdm.write(f"{ticker} ({entry_date.strftime('%Y-%m-%d')}): EPSデータなし")
+                    
+                
+            except Exception as e:
+                tqdm.write(f"{ticker} ({entry_date.strftime('%Y-%m-%d')}): エラー - {str(e)}")
+                continue
 
-    def _create_sector_performance_chart(self, df: pd.DataFrame) -> str:
-        """セクター別パフォーマンスチャートを生成"""
-        sector_perf = df.groupby('sector').agg({
-            'return_pct': ['mean', 'count'],
+        print(f"\nEPSデータ取得完了: {len(eps_data)}/{total_trades} トレード")
+        
+        # EPSデータをDataFrameに追加（trade_keyに基づいて）
+        df['eps_surprise'] = df.apply(
+            lambda x: eps_data.get((x['ticker'], x['entry_date'].strftime('%Y-%m-%d')), {}).get('eps_surprise'),
+            axis=1
+        )
+        df['eps_yoy_growth'] = df.apply(
+            lambda x: eps_data.get((x['ticker'], x['entry_date'].strftime('%Y-%m-%d')), {}).get('eps_yoy_growth'),
+            axis=1
+        )
+        df['growth_acceleration'] = df.apply(
+            lambda x: eps_data.get((x['ticker'], x['entry_date'].strftime('%Y-%m-%d')), {}).get('growth_acceleration'),
+            axis=1
+        )
+
+        # EPSメトリクスをカテゴリに分類
+        df = self._categorize_eps_metrics(df)
+        
+        # 月次パフォーマンスと勝率のヒートマップ
+        df['year'] = df['entry_date'].dt.year
+        df['month'] = df['entry_date'].dt.month
+        
+        # 平均リターンの計算（observed=Trueを明示的に指定）
+        monthly_returns = df.pivot_table(
+            values='pnl_rate',
+            index='year',
+            columns='month',
+            aggfunc='mean',
+            observed=True  # 警告を解消
+        ).round(2)
+        
+        # 勝率の計算（observed=Trueを明示的に指定）
+        monthly_winrate = df.pivot_table(
+            values='pnl',
+            index='year',
+            columns='month',
+            aggfunc=lambda x: (x > 0).mean() * 100,
+            observed=True  # 警告を解消
+        ).round(1)
+        
+        # サブプロットの作成
+        fig = go.Figure()
+        
+        # 平均リターンのヒートマップ
+        fig.add_trace(go.Heatmap(
+            z=monthly_returns.values,
+            x=monthly_returns.columns,
+            y=monthly_returns.index,
+            colorscale=[
+                [0.0, TradeReport.DARK_THEME['loss_color']],      # -20%以下: 濃い赤
+                [0.2, '#ff6b6b'],                                      # -20%～-10%: 薄い赤
+                [0.4, '#ffa07a'],                                      # -10%～0%: さらに薄い赤
+                [0.5, TradeReport.DARK_THEME['plot_bg_color']],   # 0%: 背景色
+                [0.6, '#98fb98'],                                      # 0%～10%: 薄い緑
+                [0.8, '#3cb371'],                                      # 10%～20%: 中程度の緑
+                [1.0, TradeReport.DARK_THEME['profit_color']]     # 20%以上: 濃い緑
+            ],
+            zmid=0,  # 0%を中心に色を変える
+            zmin=-20,  # -20%以下は同じ色
+            zmax=20,   # 20%以上は同じ色
+            text=monthly_returns.values.round(1),
+            texttemplate='%{text}%',
+            hoverongaps=False,
+            name=self.get_text('average_return'),
+            xaxis='x',
+            yaxis='y'
+        ))
+        
+        # 勝率のヒートマップ
+        fig.add_trace(go.Heatmap(
+            z=monthly_winrate.values,
+            x=monthly_winrate.columns,
+            y=monthly_winrate.index,
+            colorscale=[
+                [0, TradeReport.DARK_THEME['loss_color']],
+                [0.5, TradeReport.DARK_THEME['plot_bg_color']],
+                [1, TradeReport.DARK_THEME['profit_color']]
+            ],
+            text=monthly_winrate.values.round(1),
+            texttemplate='%{text}%',
+            hoverongaps=False,
+            name=self.get_text('win_rate'),
+            xaxis='x2',
+            yaxis='y2'
+        ))
+        
+        # レイアウトの更新
+        fig.update_layout(
+            title=self.get_text('monthly_performance_heatmap'),
+            grid=dict(rows=2, columns=1, pattern='independent'),
+            annotations=[
+                dict(
+                    text=self.get_text('average_return'),
+                    x=0.5, y=1.1,
+                    xref='paper', yref='paper',
+                    showarrow=False
+                ),
+                dict(
+                    text=self.get_text('win_rate'),
+                    x=0.5, y=0.45,
+                    xref='paper', yref='paper',
+                    showarrow=False
+                )
+            ],
+            template='plotly_dark',
+            paper_bgcolor=TradeReport.DARK_THEME['bg_color'],
+            plot_bgcolor=TradeReport.DARK_THEME['plot_bg_color'],
+            height=800  # グラフの高さを調整
+        )
+        
+        charts['monthly'] = plot(fig, output_type='div', include_plotlyjs=False)
+        
+        # ギャップサイズ別パフォーマンス
+        gap_stats = df.groupby(pd.cut(df['gap'], 
+                                     bins=[-np.inf, 5, 10, 15, 20, np.inf],
+                                     labels=['0-5%', '5-10%', '10-15%', '15-20%', '20%+'])
+                             ).agg({
+            'pnl_rate': ['mean', 'count'],
+            'pnl': 'sum'
+        }).round(2)
+        
+        fig_gap = go.Figure()
+        fig_gap.add_trace(go.Bar(
+            x=gap_stats.index,
+            y=gap_stats[('pnl_rate', 'mean')],
+            name=self.get_text('average_return'),
+            text=gap_stats[('pnl_rate', 'mean')].apply(lambda x: f'{x:.1f}%'),
+            textposition='auto'
+        ))
+        
+        fig_gap.add_trace(go.Scatter(
+            x=gap_stats.index,
+            y=gap_stats[('pnl_rate', 'count')],
+            name=self.get_text('number_of_trades_gap'),
+            yaxis='y2',
+            line=dict(color=TradeReport.DARK_THEME['line_color'])
+        ))
+        
+        fig_gap.update_layout(
+            title=self.get_text('gap_performance'),
+            xaxis_title=self.get_text('gap_size'),
+            yaxis_title=self.get_text('return_pct'),
+            yaxis2=dict(
+                title=self.get_text('number_of_trades_gap'),
+                overlaying='y',
+                side='right'
+            ),
+            template='plotly_dark',
+            paper_bgcolor=TradeReport.DARK_THEME['bg_color'],
+            plot_bgcolor=TradeReport.DARK_THEME['plot_bg_color']
+        )
+        
+        charts['gap'] = plot(fig_gap, output_type='div', include_plotlyjs=False)
+        
+        # トレンド分析のチャート
+        trend_data = self._calculate_trend_data(df)
+        if trend_data is not None and not trend_data.empty and 'trend_bin' in trend_data.columns:
+            trend_stats = trend_data.groupby('trend_bin').agg({
+                'pnl_rate': ['mean', 'count'],
+                'pnl': lambda x: (x > 0).mean() * 100
+            }).round(2)
+            
+            fig_trend = go.Figure(data=[
+                go.Bar(
+                    x=trend_stats.index,
+                    y=trend_stats[('pnl_rate', 'mean')],
+                    text=trend_stats[('pnl_rate', 'mean')].apply(lambda x: f'{x:.1f}%'),
+                    textposition='auto',
+                    marker_color=[
+                        TradeReport.DARK_THEME['profit_color'] if x > 0 else TradeReport.DARK_THEME['loss_color']
+                        for x in trend_stats[('pnl_rate', 'mean')]
+                    ]
+                )
+            ])
+            
+            fig_trend.update_layout(
+                title=self.get_text('pre_earnings_trend_performance'),
+                xaxis_title=self.get_text('price_change'),
+                yaxis_title=self.get_text('return_pct'),
+                template='plotly_dark',
+                paper_bgcolor=TradeReport.DARK_THEME['bg_color'],
+                plot_bgcolor=TradeReport.DARK_THEME['plot_bg_color']
+            )
+            
+            charts['trend'] = plot(fig_trend, output_type='div', include_plotlyjs=False)
+        else:
+            print("トレンドデータが取得できませんでした")
+            charts['trend'] = ""
+        
+        # セクター別パフォーマンスチャート
+        sector_stats = df.groupby('sector').agg({
+            'pnl_rate': ['mean', 'count'],
+            'pnl': lambda x: (x > 0).mean() * 100  # 勝率を計算
+        }).round(2)
+        
+        fig_sector = go.Figure()
+        
+        # 平均リターンのバー
+        fig_sector.add_trace(go.Bar(
+            x=sector_stats.index,
+            y=sector_stats[('pnl_rate', 'mean')],
+            name=self.get_text('average_return'),
+            text=sector_stats[('pnl_rate', 'mean')].apply(lambda x: f'{x:.1f}%'),
+            textposition='auto',
+            marker_color=[
+                TradeReport.DARK_THEME['profit_color'] if x > 0 
+                else TradeReport.DARK_THEME['loss_color'] 
+                for x in sector_stats[('pnl_rate', 'mean')]
+            ]
+        ))
+        
+        # 勝率のライン
+        fig_sector.add_trace(go.Scatter(
+            x=sector_stats.index,
+            y=sector_stats[('pnl', '<lambda>')],
+            name=self.get_text('win_rate'),
+            yaxis='y2',
+            line=dict(color=TradeReport.DARK_THEME['line_color'])
+        ))
+        
+        fig_sector.update_layout(
+            title=self.get_text('sector_performance'),
+            xaxis_title=self.get_text('sector'),
+            yaxis_title=self.get_text('return_pct'),
+            yaxis2=dict(
+                title=self.get_text('win_rate'),
+                overlaying='y',
+                side='right',
+                range=[0, 100]
+            ),
+            template='plotly_dark',
+            paper_bgcolor=TradeReport.DARK_THEME['bg_color'],
+            plot_bgcolor=TradeReport.DARK_THEME['plot_bg_color'],
+            showlegend=True,
+            legend=dict(
+                orientation='h',
+                yanchor='bottom',
+                y=1.02,
+                xanchor='right',
+                x=1
+            )
+        )
+        
+        charts['sector'] = plot(fig_sector, output_type='div', include_plotlyjs=False)
+        
+        # 業種別パフォーマンスチャート
+        industry_stats = df.groupby('industry').agg({
+            'pnl_rate': ['mean', 'count'],
             'pnl': lambda x: (x > 0).mean() * 100
         }).round(2)
         
-        sector_perf.columns = ['avg_return', 'trade_count', 'win_rate']
-        sector_perf = sector_perf[sector_perf['trade_count'] >= 1]
+        # トレード数で上位15業種を選択
+        top_industries = industry_stats.nlargest(15, ('pnl_rate', 'count'))
         
-        sectors = sector_perf.index.tolist()
-        avg_returns = sector_perf['avg_return'].tolist()
-        win_rates = sector_perf['win_rate'].tolist()
+        fig_industry = go.Figure()
         
-        colors = [self.DARK_THEME['profit_color'] if x > 0 else self.DARK_THEME['loss_color'] 
-                 for x in avg_returns]
+        # 平均リターンのバー
+        fig_industry.add_trace(go.Bar(
+            x=top_industries.index,
+            y=top_industries[('pnl_rate', 'mean')],
+            name=self.get_text('average_return'),
+            text=top_industries[('pnl_rate', 'mean')].apply(lambda x: f'{x:.1f}%'),
+            textposition='auto',
+            marker_color=[
+                TradeReport.DARK_THEME['profit_color'] if x > 0 
+                else TradeReport.DARK_THEME['loss_color'] 
+                for x in top_industries[('pnl_rate', 'mean')]
+            ]
+        ))
         
-        script = f"""
-        <div id="sector-perf-chart" style="width: 100%; height: 400px;"></div>
-        <script>
-        var trace1 = {{
-            x: {sectors},
-            y: {avg_returns},
-            type: 'bar',
-            name: 'Average Return',
-            marker: {{color: {colors}}}
-        }};
+        # 勝率のライン
+        fig_industry.add_trace(go.Scatter(
+            x=top_industries.index,
+            y=top_industries[('pnl', '<lambda>')],
+            name=self.get_text('win_rate'),
+            yaxis='y2',
+            line=dict(color=TradeReport.DARK_THEME['line_color'])
+        ))
         
-        var trace2 = {{
-            x: {sectors}, 
-            y: {win_rates},
-            type: 'scatter',
-            mode: 'lines+markers',
-            name: 'Win Rate',
-            line: {{color: '{self.DARK_THEME['line_color']}'}},
-            yaxis: 'y2'
-        }};
+        fig_industry.update_layout(
+            title=self.get_text('industry_performance'),
+            xaxis_title=self.get_text('industry'),
+            yaxis_title=self.get_text('return_pct'),
+            yaxis2=dict(
+                title=self.get_text('win_rate'),
+                overlaying='y',
+                side='right',
+                range=[0, 100]
+            ),
+            template='plotly_dark',
+            paper_bgcolor=TradeReport.DARK_THEME['bg_color'],
+            plot_bgcolor=TradeReport.DARK_THEME['plot_bg_color'],
+            showlegend=True,
+            legend=dict(
+                orientation='h',
+                yanchor='bottom',
+                y=1.02,
+                xanchor='right',
+                x=1
+            )
+        )
         
-        var layout = {{
-            title: {{text: 'Sector Performance', font: {{color: '{self.DARK_THEME['text_color']}'}}}},
-            paper_bgcolor: '{self.DARK_THEME['bg_color']}',
-            plot_bgcolor: '{self.DARK_THEME['plot_bg_color']}', 
-            font: {{color: '{self.DARK_THEME['text_color']}'}},
-            xaxis: {{title: 'Sector', gridcolor: '{self.DARK_THEME['grid_color']}'}},
-            yaxis: {{title: 'Average Return (%)', gridcolor: '{self.DARK_THEME['grid_color']}'}},
-            yaxis2: {{
-                title: 'Win Rate (%)',
-                overlaying: 'y',
-                side: 'right',
-                range: [0, 100]
-            }}
-        }};
+        # X軸のラベルを45度回転
+        fig_industry.update_xaxes(tickangle=45)
         
-        Plotly.newPlot('sector-perf-chart', [trace1, trace2], layout, {{responsive: true}});
-        </script>
-        """
-        return script
-
-    def _create_industry_performance_chart(self, df: pd.DataFrame) -> str:
-        """業界別パフォーマンスチャート（Top 15）を生成"""
-        industry_perf = df.groupby('industry').agg({
-            'return_pct': ['mean', 'count']
+        charts['industry'] = plot(fig_industry, output_type='div', include_plotlyjs=False)
+        
+        # EPSサプライズ別パフォーマンスチャート
+        surprise_stats = df.groupby('surprise_category', observed=True).agg({
+            'pnl_rate': ['mean', 'count'],
+            'pnl': lambda x: (x > 0).mean() * 100  # 勝率を計算
         }).round(2)
         
-        industry_perf.columns = ['avg_return', 'trade_count']
-        industry_perf = industry_perf[industry_perf['trade_count'] >= 1]
-        industry_perf = industry_perf.sort_values('avg_return', ascending=False).head(15)
+        fig_surprise = go.Figure()
         
-        industries = industry_perf.index.tolist()
-        avg_returns = industry_perf['avg_return'].tolist()
+        # 平均リターンのバー
+        fig_surprise.add_trace(go.Bar(
+            x=surprise_stats.index,
+            y=surprise_stats[('pnl_rate', 'mean')],
+            name=self.get_text('average_return'),
+            text=surprise_stats[('pnl_rate', 'mean')].apply(lambda x: f'{x:.1f}%'),
+            textposition='auto',
+            marker_color=[
+                self.DARK_THEME['profit_color'] if x > 0 
+                else self.DARK_THEME['loss_color'] 
+                for x in surprise_stats[('pnl_rate', 'mean')]
+            ]
+        ))
         
-        colors = [self.DARK_THEME['profit_color'] if x > 0 else self.DARK_THEME['loss_color'] 
-                 for x in avg_returns]
+        # 勝率のライン
+        fig_surprise.add_trace(go.Scatter(
+            x=surprise_stats.index,
+            y=surprise_stats[('pnl', '<lambda>')],
+            name=self.get_text('win_rate'),
+            yaxis='y2',
+            line=dict(color=self.DARK_THEME['line_color'])
+        ))
         
-        script = f"""
-        <div id="industry-perf-chart" style="width: 100%; height: 400px;"></div>
-        <script>
-        var trace = {{
-            x: {industries},
-            y: {avg_returns},
-            type: 'bar',
-            marker: {{color: {colors}}},
-            text: {[f"{x:.1f}%" for x in avg_returns]},
-            textposition: 'outside'
-        }};
+        fig_surprise.update_layout(
+            title=self.get_text('eps_surprise_performance'),
+            xaxis_title=self.get_text('eps_surprise'),
+            yaxis_title=self.get_text('return_pct'),
+            yaxis2=dict(
+                title=self.get_text('win_rate'),
+                overlaying='y',
+                side='right',
+                range=[0, 100]
+            ),
+            template='plotly_dark',
+            paper_bgcolor=self.DARK_THEME['bg_color'],
+            plot_bgcolor=self.DARK_THEME['plot_bg_color'],
+            showlegend=True,
+            legend=dict(
+                orientation='h',
+                yanchor='bottom',
+                y=1.02,
+                xanchor='right',
+                x=1
+            )
+        )
         
-        var layout = {{
-            title: {{text: 'Industry Performance (Top 15)', font: {{color: '{self.DARK_THEME['text_color']}'}}}},
-            paper_bgcolor: '{self.DARK_THEME['bg_color']}',
-            plot_bgcolor: '{self.DARK_THEME['plot_bg_color']}',
-            font: {{color: '{self.DARK_THEME['text_color']}'}},
-            xaxis: {{title: 'Industry', gridcolor: '{self.DARK_THEME['grid_color']}', tickangle: -45}},
-            yaxis: {{title: 'Average Return (%)', gridcolor: '{self.DARK_THEME['grid_color']}'}}
-        }};
+        charts['eps_surprise'] = plot(fig_surprise, output_type='div', include_plotlyjs=False)
         
-        Plotly.newPlot('industry-perf-chart', [trace], layout, {{responsive: true}});
-        </script>
-        """
-        return script
-
-    def _create_gap_performance_chart(self, df: pd.DataFrame) -> str:
-        """ギャップサイズ別パフォーマンスチャートを生成"""
-        # ギャップサイズをカテゴリに分類
-        df['gap_category'] = pd.cut(df['gap_size'], 
-                                   bins=[-float('inf'), 0, 2, 5, 10, float('inf')],
-                                   labels=['Negative', '0-2%', '2-5%', '5-10%', '10%+'])
-        
-        gap_perf = df.groupby('gap_category', observed=True).agg({
-            'return_pct': ['mean', 'count']
+        # EPS成長率別パフォーマンスチャート
+        growth_stats = df.groupby('growth_category', observed=True).agg({
+            'pnl_rate': ['mean', 'count'],
+            'pnl': lambda x: (x > 0).mean() * 100
         }).round(2)
         
-        gap_perf.columns = ['avg_return', 'trade_count']
-        gap_perf = gap_perf[gap_perf['trade_count'] > 0]
+        fig_growth = go.Figure()
         
-        categories = gap_perf.index.tolist()
-        avg_returns = gap_perf['avg_return'].tolist()
+        # 平均リターンのバー
+        fig_growth.add_trace(go.Bar(
+            x=growth_stats.index,
+            y=growth_stats[('pnl_rate', 'mean')],
+            name=self.get_text('average_return'),
+            text=growth_stats[('pnl_rate', 'mean')].apply(lambda x: f'{x:.1f}%'),
+            textposition='auto',
+            marker_color=[
+                self.DARK_THEME['profit_color'] if x > 0 
+                else self.DARK_THEME['loss_color'] 
+                for x in growth_stats[('pnl_rate', 'mean')]
+            ]
+        ))
         
-        colors = [self.DARK_THEME['profit_color'] if x > 0 else self.DARK_THEME['loss_color'] 
-                 for x in avg_returns]
+        # 勝率のライン
+        fig_growth.add_trace(go.Scatter(
+            x=growth_stats.index,
+            y=growth_stats[('pnl', '<lambda>')],
+            name=self.get_text('win_rate'),
+            yaxis='y2',
+            line=dict(color=self.DARK_THEME['line_color'])
+        ))
         
-        script = f"""
-        <div id="gap-perf-chart" style="width: 100%; height: 400px;"></div>
-        <script>
-        var trace = {{
-            x: {categories},
-            y: {avg_returns},
-            type: 'bar',
-            marker: {{color: {colors}}}
-        }};
+        fig_growth.update_layout(
+            title=self.get_text('eps_growth_performance'),
+            xaxis_title=self.get_text('eps_growth'),
+            yaxis_title=self.get_text('return_pct'),
+            yaxis2=dict(
+                title=self.get_text('win_rate'),
+                overlaying='y',
+                side='right',
+                range=[0, 100]
+            ),
+            template='plotly_dark',
+            paper_bgcolor=self.DARK_THEME['bg_color'],
+            plot_bgcolor=self.DARK_THEME['plot_bg_color'],
+            showlegend=True,
+            legend=dict(
+                orientation='h',
+                yanchor='bottom',
+                y=1.02,
+                xanchor='right',
+                x=1
+            )
+        )
         
-        var layout = {{
-            title: {{text: 'Performance by Gap Size', font: {{color: '{self.DARK_THEME['text_color']}'}}}},
-            paper_bgcolor: '{self.DARK_THEME['bg_color']}',
-            plot_bgcolor: '{self.DARK_THEME['plot_bg_color']}',
-            font: {{color: '{self.DARK_THEME['text_color']}'}},
-            xaxis: {{title: 'Gap Size Range', gridcolor: '{self.DARK_THEME['grid_color']}'}},
-            yaxis: {{title: 'Average Return (%)', gridcolor: '{self.DARK_THEME['grid_color']}'}}
-        }};
+        charts['eps_growth'] = plot(fig_growth, output_type='div', include_plotlyjs=False)
         
-        Plotly.newPlot('gap-perf-chart', [trace], layout, {{responsive: true}});
-        </script>
-        """
-        return script
-
-    def _create_pre_earnings_chart(self, df: pd.DataFrame) -> str:
-        """決算前トレンド別パフォーマンスチャートを生成"""
-        # 決算前トレンドをカテゴリに分類
-        df['trend_category'] = pd.cut(df['pre_earnings_trend'],
-                                     bins=[-float('inf'), -20, -10, 0, 10, 20, float('inf')],
-                                     labels=['<-20%', '-20~-10%', '-10~0%', '0~10%', '10~20%', '>20%'])
-        
-        trend_perf = df.groupby('trend_category', observed=True).agg({
-            'return_pct': ['mean', 'count']
+        # 成長率加速度別パフォーマンスチャート
+        acceleration_stats = df.groupby('growth_acceleration_category', observed=True).agg({
+            'pnl_rate': ['mean', 'count'],
+            'pnl': lambda x: (x > 0).mean() * 100
         }).round(2)
         
-        trend_perf.columns = ['avg_return', 'trade_count']
-        trend_perf = trend_perf[trend_perf['trade_count'] > 0]
+        fig_acceleration = go.Figure()
         
-        categories = trend_perf.index.tolist()
-        avg_returns = trend_perf['avg_return'].tolist()
+        # 平均リターンのバー
+        fig_acceleration.add_trace(go.Bar(
+            x=acceleration_stats.index,
+            y=acceleration_stats[('pnl_rate', 'mean')],
+            name=self.get_text('average_return'),
+            text=acceleration_stats[('pnl_rate', 'mean')].apply(lambda x: f'{x:.1f}%'),
+            textposition='auto',
+            marker_color=[
+                self.DARK_THEME['profit_color'] if x > 0 
+                else self.DARK_THEME['loss_color'] 
+                for x in acceleration_stats[('pnl_rate', 'mean')]
+            ]
+        ))
         
-        colors = [self.DARK_THEME['profit_color'] if x > 0 else self.DARK_THEME['loss_color'] 
-                 for x in avg_returns]
+        # 勝率のライン
+        fig_acceleration.add_trace(go.Scatter(
+            x=acceleration_stats.index,
+            y=acceleration_stats[('pnl', '<lambda>')],
+            name=self.get_text('win_rate'),
+            yaxis='y2',
+            line=dict(color=self.DARK_THEME['line_color'])
+        ))
         
-        script = f"""
-        <div id="pre-earnings-chart" style="width: 100%; height: 400px;"></div>
-        <script>
-        var trace = {{
-            x: {categories},
-            y: {avg_returns}, 
-            type: 'bar',
-            marker: {{color: {colors}}}
-        }};
+        fig_acceleration.update_layout(
+            title=self.get_text('eps_acceleration_performance'),
+            xaxis_title=self.get_text('eps_acceleration'),
+            yaxis_title=self.get_text('return_pct'),
+            yaxis2=dict(
+                title=self.get_text('win_rate'),
+                overlaying='y',
+                side='right',
+                range=[0, 100]
+            ),
+            template='plotly_dark',
+            paper_bgcolor=self.DARK_THEME['bg_color'],
+            plot_bgcolor=self.DARK_THEME['plot_bg_color'],
+            showlegend=True,
+            legend=dict(
+                orientation='h',
+                yanchor='bottom',
+                y=1.02,
+                xanchor='right',
+                x=1
+            )
+        )
         
-        var layout = {{
-            title: {{text: 'Performance by Pre-Earnings Trend', font: {{color: '{self.DARK_THEME['text_color']}'}}}},
-            paper_bgcolor: '{self.DARK_THEME['bg_color']}',
-            plot_bgcolor: '{self.DARK_THEME['plot_bg_color']}',
-            font: {{color: '{self.DARK_THEME['text_color']}'}},
-            xaxis: {{title: 'Pre-Earnings 20-Day Change', gridcolor: '{self.DARK_THEME['grid_color']}'}},
-            yaxis: {{title: 'Average Return (%)', gridcolor: '{self.DARK_THEME['grid_color']}'}}
-        }};
+        # X軸のラベルを45度回転（加速度カテゴリは文字列が長いため）
+        fig_acceleration.update_xaxes(tickangle=45)
         
-        Plotly.newPlot('pre-earnings-chart', [trace], layout, {{responsive: true}});
-        </script>
-        """
-        return script
-
-    def _create_volume_trend_chart(self, df: pd.DataFrame) -> str:
-        """ボリュームトレンド分析チャートを生成"""
-        # ボリューム変化をカテゴリに分類
-        df['volume_category'] = pd.cut(df['volume_change'],
-                                      bins=[-float('inf'), -20, 20, 50, 100, float('inf')],
-                                      labels=['Decrease', 'Neutral', 'Moderate Inc', 'Large Inc', 'Very Large Inc'])
+        charts['eps_acceleration'] = plot(fig_acceleration, output_type='div', include_plotlyjs=False)
         
-        volume_perf = df.groupby('volume_category', observed=True).agg({
-            'return_pct': ['mean', 'count']
-        }).round(2)
+        # 出来高トレンド分析のチャート
+        volume_data = self._analyze_volume_trend(df)
+        if volume_data is not None and not volume_data.empty:
+            try:
+                volume_stats = volume_data.groupby('volume_category').agg({
+                    'pnl_rate': ['mean', 'count'],
+                    'pnl': lambda x: (x > 0).mean() * 100
+                }).round(2)
+                
+                fig_volume = go.Figure()
+                
+                # 平均リターンのバー
+                fig_volume.add_trace(go.Bar(
+                    x=volume_stats.index,
+                    y=volume_stats[('pnl_rate', 'mean')],
+                    name=self.get_text('average_return'),
+                    text=volume_stats[('pnl_rate', 'mean')].apply(lambda x: f'{x:.1f}%'),
+                    textposition='auto',
+                    marker_color=[
+                        self.DARK_THEME['profit_color'] if x > 0 
+                        else self.DARK_THEME['loss_color'] 
+                        for x in volume_stats[('pnl_rate', 'mean')]
+                    ]
+                ))
+                
+                # 勝率のライン
+                fig_volume.add_trace(go.Scatter(
+                    x=volume_stats.index,
+                    y=volume_stats[('pnl', '<lambda>')],
+                    name=self.get_text('win_rate'),
+                    yaxis='y2',
+                    line=dict(color=self.DARK_THEME['line_color'])
+                ))
+                
+                fig_volume.update_layout(
+                    title=self.get_text('volume_trend_analysis'),
+                    xaxis_title=self.get_text('volume_category'),
+                    yaxis_title=self.get_text('return_pct'),
+                    yaxis2=dict(
+                        title=self.get_text('win_rate'),
+                        overlaying='y',
+                        side='right',
+                        range=[0, 100]
+                    ),
+                    template='plotly_dark',
+                    paper_bgcolor=self.DARK_THEME['bg_color'],
+                    plot_bgcolor=self.DARK_THEME['plot_bg_color'],
+                    showlegend=True,
+                    legend=dict(
+                        orientation='h',
+                        yanchor='bottom',
+                        y=1.02,
+                        xanchor='right',
+                        x=1
+                    )
+                )
+                
+                # X軸のラベルを45度回転（カテゴリ名が長いため）
+                fig_volume.update_xaxes(tickangle=45)
+                
+                charts['volume'] = plot(fig_volume, output_type='div', include_plotlyjs=False)
+            except Exception as e:
+                print(f"出来高トレンドチャート生成エラー: {str(e)}")
+                charts['volume'] = ""
+        else:
+            print("出来高トレンドデータが取得できませんでした")
+            charts['volume'] = ""
         
-        volume_perf.columns = ['avg_return', 'trade_count']
-        volume_perf = volume_perf[volume_perf['trade_count'] > 0]
+        # 移動平均線分析のチャート
+        ma_data = self._analyze_ma_position(df)
         
-        categories = volume_perf.index.tolist()
-        avg_returns = volume_perf['avg_return'].tolist()
+        # デバッグ情報を追加
+        print("\nMA分析結果:")
+        print(f"データ存在: {ma_data is not None}")
+        if ma_data is not None:
+            print(f"データ件数: {len(ma_data)}")
+            print(f"カラム: {ma_data.columns.tolist()}")
         
-        colors = [self.DARK_THEME['profit_color'] if x > 0 else self.DARK_THEME['loss_color'] 
-                 for x in avg_returns]
-        
-        script = f"""
-        <div id="volume-trend-chart" style="width: 100%; height: 400px;"></div>
-        <script>
-        var trace = {{
-            x: {categories},
-            y: {avg_returns},
-            type: 'bar',
-            marker: {{color: {colors}}}
-        }};
-        
-        var layout = {{
-            title: {{text: 'Volume Trend Analysis', font: {{color: '{self.DARK_THEME['text_color']}'}}}},
-            paper_bgcolor: '{self.DARK_THEME['bg_color']}',
-            plot_bgcolor: '{self.DARK_THEME['plot_bg_color']}',
-            font: {{color: '{self.DARK_THEME['text_color']}'}},
-            xaxis: {{title: 'Volume Category', gridcolor: '{self.DARK_THEME['grid_color']}', tickangle: -45}},
-            yaxis: {{title: 'Average Return (%)', gridcolor: '{self.DARK_THEME['grid_color']}'}}
-        }};
-        
-        Plotly.newPlot('volume-trend-chart', [trace], layout, {{responsive: true}});
-        </script>
-        """
-        return script
-
-    def _create_ma_analysis_chart(self, df: pd.DataFrame) -> str:
-        """移動平均分析チャートを生成"""
-        # MA50, MA200の比率をカテゴリに分類
-        df['ma50_category'] = pd.cut(df['price_to_ma50'],
-                                    bins=[0, 0.95, 1.0, 1.05, 1.1, float('inf')],
-                                    labels=['<95%', '95-100%', '100-105%', '105-110%', '>110%'])
-        
-        ma_perf = df.groupby('ma50_category', observed=True).agg({
-            'return_pct': ['mean', 'count']
-        }).round(2)
-        
-        ma_perf.columns = ['avg_return', 'trade_count']
-        ma_perf = ma_perf[ma_perf['trade_count'] > 0]
-        
-        categories = ma_perf.index.tolist()
-        avg_returns = ma_perf['avg_return'].tolist()
-        
-        colors = [self.DARK_THEME['profit_color'] if x > 0 else self.DARK_THEME['loss_color'] 
-                 for x in avg_returns]
-        
-        script = f"""
-        <div id="ma-analysis-chart" style="width: 100%; height: 400px;"></div>
-        <script>
-        var trace = {{
-            x: {categories},
-            y: {avg_returns},
-            type: 'bar',
-            marker: {{color: {colors}}}
-        }};
-        
-        var layout = {{
-            title: {{text: 'MA50 Analysis', font: {{color: '{self.DARK_THEME['text_color']}'}}}},
-            paper_bgcolor: '{self.DARK_THEME['bg_color']}',
-            plot_bgcolor: '{self.DARK_THEME['plot_bg_color']}',
-            font: {{color: '{self.DARK_THEME['text_color']}'}},
-            xaxis: {{title: 'Price vs MA50', gridcolor: '{self.DARK_THEME['grid_color']}'}},
-            yaxis: {{title: 'Average Return (%)', gridcolor: '{self.DARK_THEME['grid_color']}'}}
-        }};
-        
-        Plotly.newPlot('ma-analysis-chart', [trace], layout, {{responsive: true}});
-        </script>
-        """
-        return script
-
-    def _create_market_cap_chart(self, df: pd.DataFrame) -> str:
-        """時価総額別パフォーマンスチャートを生成"""
-        mcap_perf = df.groupby('market_cap_category').agg({
-            'return_pct': ['mean', 'count']
-        }).round(2)
-        
-        mcap_perf.columns = ['avg_return', 'trade_count']
-        mcap_perf = mcap_perf[mcap_perf['trade_count'] > 0]
-        
-        categories = mcap_perf.index.tolist()
-        avg_returns = mcap_perf['avg_return'].tolist()
-        
-        colors = [self.DARK_THEME['profit_color'] if x > 0 else self.DARK_THEME['loss_color'] 
-                 for x in avg_returns]
-        
-        script = f"""
-        <div id="market-cap-chart" style="width: 100%; height: 400px;"></div>
-        <script>
-        var trace = {{
-            x: {categories},
-            y: {avg_returns},
-            type: 'bar',
-            marker: {{color: {colors}}}
-        }};
-        
-        var layout = {{
-            title: {{text: 'Market Cap Performance', font: {{color: '{self.DARK_THEME['text_color']}'}}}},
-            paper_bgcolor: '{self.DARK_THEME['bg_color']}',
-            plot_bgcolor: '{self.DARK_THEME['plot_bg_color']}',
-            font: {{color: '{self.DARK_THEME['text_color']}'}},
-            xaxis: {{title: 'Market Cap Category', gridcolor: '{self.DARK_THEME['grid_color']}'}},
-            yaxis: {{title: 'Average Return (%)', gridcolor: '{self.DARK_THEME['grid_color']}'}}
-        }};
-        
-        Plotly.newPlot('market-cap-chart', [trace], layout, {{responsive: true}});
-        </script>
-        """
-        return script
-
-    def _create_price_range_chart(self, df: pd.DataFrame) -> str:
-        """価格帯別パフォーマンスチャートを生成"""
-        price_perf = df.groupby('price_category').agg({
-            'return_pct': ['mean', 'count']
-        }).round(2)
-        
-        price_perf.columns = ['avg_return', 'trade_count']
-        price_perf = price_perf[price_perf['trade_count'] > 0]
-        
-        categories = price_perf.index.tolist()
-        avg_returns = price_perf['avg_return'].tolist()
-        
-        colors = [self.DARK_THEME['profit_color'] if x > 0 else self.DARK_THEME['loss_color'] 
-                 for x in avg_returns]
-        
-        script = f"""
-        <div id="price-range-chart" style="width: 100%; height: 400px;"></div>
-        <script>
-        var trace = {{
-            x: {categories},
-            y: {avg_returns},
-            type: 'bar',
-            marker: {{color: {colors}}}
-        }};
-        
-        var layout = {{
-            title: {{text: 'Price Range Performance', font: {{color: '{self.DARK_THEME['text_color']}'}}}},
-            paper_bgcolor: '{self.DARK_THEME['bg_color']}',
-            plot_bgcolor: '{self.DARK_THEME['plot_bg_color']}',
-            font: {{color: '{self.DARK_THEME['text_color']}'}},
-            xaxis: {{title: 'Price Range Category', gridcolor: '{self.DARK_THEME['grid_color']}'}},
-            yaxis: {{title: 'Average Return (%)', gridcolor: '{self.DARK_THEME['grid_color']}'}}
-        }};
-        
-        Plotly.newPlot('price-range-chart', [trace], layout, {{responsive: true}});
-        </script>
-        """
-        return script
-
-    def _generate_risk_analysis(self, trades_df: pd.DataFrame, metrics: Dict[str, float]) -> str:
-        """Generate risk analysis"""
-        risk_warnings = []
-        
-        # Win rate check
-        win_rate = metrics.get('win_rate', 0)
-        if win_rate < 40:
-            risk_warnings.append("⚠️ Win rate is below 40%. Consider reviewing your strategy.")
-        
-        # Drawdown check
-        max_drawdown = metrics.get('max_drawdown_pct', 0)
-        if max_drawdown > 20:
-            risk_warnings.append("⚠️ Maximum drawdown exceeds 20%. Risk management strengthening is needed.")
-        
-        # Profit factor check
-        profit_factor = metrics.get('profit_factor', 0)
-        if profit_factor < 1.5:
-            risk_warnings.append("⚠️ Profit factor is below 1.5. Profitability improvement is needed.")
-        
-        # Trade count check
-        total_trades = metrics.get('total_trades', 0)
-        if total_trades < 30:
-            risk_warnings.append("⚠️ Low number of trades may reduce statistical reliability.")
-        
-        if not risk_warnings:
-            risk_warnings.append("✅ Currently, no significant risk factors have been detected.")
-        
-        warnings_html = ""
-        for warning in risk_warnings:
-            if "⚠️" in warning:
-                warnings_html += f'<div class="warning">{warning}</div>'
+        # データが正しく取得できたか確認
+        if ma_data is not None and not ma_data.empty:
+            # MA200のチャート
+            if 'ma200_category' in ma_data.columns:
+                try:
+                    ma200_stats = ma_data.groupby('ma200_category').agg({
+                        'pnl_rate': ['mean', 'count'],
+                        'pnl': lambda x: (x > 0).mean() * 100
+                    }).round(2)
+                    
+                    # ... チャート生成コード ...
+                    fig_ma200 = go.Figure()
+                    fig_ma200.add_trace(go.Bar(
+                        x=ma200_stats.index,
+                        y=ma200_stats[('pnl_rate', 'mean')],
+                        name=self.get_text('average_return'),
+                        text=ma200_stats[('pnl_rate', 'mean')].apply(lambda x: f'{x:.1f}%'),
+                        textposition='auto',
+                        marker_color=[
+                            self.DARK_THEME['profit_color'] if x > 0 
+                            else self.DARK_THEME['loss_color'] 
+                            for x in ma200_stats[('pnl_rate', 'mean')]
+                        ]
+                    ))
+                    
+                    # 勝率のライン
+                    fig_ma200.add_trace(go.Scatter(
+                        x=ma200_stats.index,
+                        y=ma200_stats[('pnl', '<lambda>')],
+                        name=self.get_text('win_rate'),
+                        yaxis='y2',
+                        line=dict(color=self.DARK_THEME['line_color'])
+                    ))
+                    
+                    fig_ma200.update_layout(
+                        title=self.get_text('ma200_analysis'),
+                        xaxis_title=self.get_text('ma200_category'),
+                        yaxis_title=self.get_text('return_pct'),
+                        yaxis2=dict(
+                            title=self.get_text('win_rate'),
+                            overlaying='y',
+                            side='right',
+                            range=[0, 100]
+                        ),
+                        template='plotly_dark',
+                        paper_bgcolor=self.DARK_THEME['bg_color'],
+                        plot_bgcolor=self.DARK_THEME['plot_bg_color'],
+                        showlegend=True,
+                        legend=dict(
+                            orientation='h',
+                            yanchor='bottom',
+                            y=1.02,
+                            xanchor='right',
+                            x=1
+                        )
+                    )
+                    
+                    charts['ma200'] = plot(fig_ma200, output_type='div', include_plotlyjs=False)
+                except Exception as e:
+                    print(f"MA200チャート生成エラー: {str(e)}")
+                    charts['ma200'] = ""  # エラー時は空文字列を設定
             else:
-                warnings_html += f'<div class="info">{warning}</div>'
+                print("MA200カテゴリが見つかりません")
+                charts['ma200'] = ""
+        else:
+            print("MA分析データが取得できませんでした")
+            charts['ma200'] = ""
         
-        return warnings_html + """
-        <div class="info">
-            <h4>💡 General Important Notes</h4>
-            <ul>
-                <li>Past performance does not guarantee future results</li>
-                <li>Strategy effectiveness may change due to market environment changes</li>
-                <li>It is important to strictly follow risk management rules</li>
-                <li>Please conduct regular strategy reviews and optimization</li>
-            </ul>
-        </div>
-        """
+        # MA50も同様に処理
+        if ma_data is not None and not ma_data.empty:
+            if 'ma50_category' in ma_data.columns:
+                try:
+                    # ... MA50のチャート生成コード ...
+                    ma50_stats = ma_data.groupby('ma50_category').agg({
+                        'pnl_rate': ['mean', 'count'],
+                        'pnl': lambda x: (x > 0).mean() * 100
+                    }).round(2)
+                    
+                    fig_ma50 = go.Figure()
+                    fig_ma50.add_trace(go.Bar(
+                        x=ma50_stats.index,
+                        y=ma50_stats[('pnl_rate', 'mean')],
+                        name=self.get_text('average_return'),
+                        text=ma50_stats[('pnl_rate', 'mean')].apply(lambda x: f'{x:.1f}%'),
+                        textposition='auto',
+                        marker_color=[
+                            self.DARK_THEME['profit_color'] if x > 0 
+                            else self.DARK_THEME['loss_color'] 
+                            for x in ma50_stats[('pnl_rate', 'mean')]
+                        ]
+                    ))
+                    
+                    # 勝率のライン
+                    fig_ma50.add_trace(go.Scatter(
+                        x=ma50_stats.index,
+                        y=ma50_stats[('pnl', '<lambda>')],
+                        name=self.get_text('win_rate'),
+                        yaxis='y2',
+                        line=dict(color=self.DARK_THEME['line_color'])
+                    ))
+                    
+                    fig_ma50.update_layout(
+                        title=self.get_text('ma50_analysis'),
+                        xaxis_title=self.get_text('ma50_category'),
+                        yaxis_title=self.get_text('return_pct'),
+                        yaxis2=dict(
+                            title=self.get_text('win_rate'),
+                            overlaying='y',
+                            side='right',
+                            range=[0, 100]
+                        ),
+                        template='plotly_dark',
+                        paper_bgcolor=self.DARK_THEME['bg_color'],
+                        plot_bgcolor=self.DARK_THEME['plot_bg_color'],
+                        showlegend=True,
+                        legend=dict(
+                            orientation='h',
+                            yanchor='bottom',
+                            y=1.02,
+                            xanchor='right',
+                            x=1
+                        )
+                    )
+                    
+                    charts['ma50'] = plot(fig_ma50, output_type='div', include_plotlyjs=False)
+                except Exception as e:
+                    print(f"MA50チャート生成エラー: {str(e)}")
+                    charts['ma50'] = ""
+            else:
+                print("MA50カテゴリが見つかりません")
+                charts['ma50'] = ""
+        else:
+            charts['ma50'] = ""
+        
+        return charts
 
+    def _calculate_trend_data(self, df):
+        """決算前のトレンドデータを計算"""
+        trends = []
+        for _, trade in df.iterrows():
+            # 決算前の株価データを取得
+            pre_earnings_start = (pd.to_datetime(trade['entry_date']) - 
+                                timedelta(days=30)).strftime('%Y-%m-%d')
+            stock_data = self.get_historical_data(
+                trade['ticker'],
+                pre_earnings_start,
+                trade['entry_date']
+            )
+            
+            if stock_data is not None and len(stock_data) >= 20:
+                # 21日移動平均線を計算
+                stock_data['MA21'] = stock_data['Close'].rolling(window=21).mean()
+                
+                # 20日間の価格変化率を計算
+                price_change = ((stock_data['Close'].iloc[-1] - stock_data['Close'].iloc[-20]) / 
+                              stock_data['Close'].iloc[-20] * 100)
+                
+                # 20日移動平均との位置関係
+                ma_position = 'above' if stock_data['Close'].iloc[-1] > stock_data['MA21'].iloc[-1] else 'below'
+                
+                trends.append({
+                    'ticker': trade['ticker'],
+                    'entry_date': trade['entry_date'],
+                    'pre_earnings_change': price_change,
+                    'ma_position': ma_position,
+                    'pnl_rate': trade['pnl_rate'],
+                    'pnl': trade['pnl']  # pnlを追加
+                })
+        
+        trend_df = pd.DataFrame(trends)
+        
+        if not trend_df.empty:
+            # トレンドの強さでビンを作成
+            trend_df['trend_bin'] = pd.cut(trend_df['pre_earnings_change'],
+                                         bins=[-np.inf, -20, -10, 0, 10, 20, np.inf],
+                                         labels=['<-20%', '-20~-10%', '-10~0%', '0~10%', '10~20%', '>20%'])
+            
+            # トレンド別の統計
+            trend_stats = trend_df.groupby('trend_bin').agg({
+                'pnl_rate': ['mean', 'std', 'count']
+            }).round(2)
+            
+            print("\nトレンド別パフォーマンス:")
+            for trend_bin in trend_stats.index:
+                stats = trend_stats.loc[trend_bin]
+                print(f"\n{trend_bin}:")
+                print(f"- 平均リターン: {stats[('pnl_rate', 'mean')]:.2f}%")
+                print(f"- 標準偏差: {stats[('pnl_rate', 'std')]:.2f}%")
+                print(f"- トレード数: {stats[('pnl_rate', 'count')]}")
+        
+        return trend_df  # DataFrameを返す
+
+    def _analyze_breakout_performance(self, df):
+        """ブレイクアウトパターンの分析"""
+        print("\n=== ブレイクアウトパターン分析 ===")
+        
+        breakouts = []
+        for _, trade in df.iterrows():
+            # 決算前の株価データを取得
+            pre_earnings_start = (pd.to_datetime(trade['entry_date']) - 
+                                timedelta(days=60)).strftime('%Y-%m-%d')
+            stock_data = self.get_historical_data(
+                trade['ticker'],
+                pre_earnings_start,
+                trade['entry_date']
+            )
+            
+            if stock_data is not None and len(stock_data) >= 20:
+                # 20日高値を計算
+                high_20d = stock_data['High'].rolling(window=20).max().iloc[-2]  # 直前日までの20日高値
+                
+                # ブレイクアウトの判定
+                is_breakout = trade['entry_price'] > high_20d
+                breakout_percent = ((trade['entry_price'] - high_20d) / high_20d * 100) if is_breakout else 0
+                
+                breakouts.append({
+                    'ticker': trade['ticker'],
+                    'entry_date': trade['entry_date'],
+                    'is_breakout': is_breakout,
+                    'breakout_percent': breakout_percent,
+                    'pnl_rate': trade['pnl_rate']
+                })
+        
+        breakout_df = pd.DataFrame(breakouts)
+        
+        # ブレイクアウトの有無による統計
+        breakout_stats = breakout_df.groupby('is_breakout').agg({
+            'pnl_rate': ['mean', 'std', 'count']
+        }).round(2)
+        
+        # ブレイクアウトの大きさによる分析
+        breakout_df['breakout_bin'] = pd.cut(breakout_df['breakout_percent'],
+                                            bins=[-np.inf, 0, 2, 5, 10, np.inf],
+                                            labels=['No Breakout', '0-2%', '2-5%', '5-10%', '>10%'])
+        
+        size_stats = breakout_df.groupby('breakout_bin').agg({
+            'pnl_rate': ['mean', 'std', 'count']
+        }).round(2)
+        
+        print("\nブレイクアウトパターン別パフォーマンス:")
+        for breakout_bin in size_stats.index:
+            stats = size_stats.loc[breakout_bin]
+            print(f"\n{breakout_bin}:")
+            print(f"- 平均リターン: {stats[('pnl_rate', 'mean')]:.2f}%")
+            print(f"- 標準偏差: {stats[('pnl_rate', 'std')]:.2f}%")
+            print(f"- トレード数: {stats[('pnl_rate', 'count')]}")
+
+    def _analyze_ma_position(self, df):
+        """移動平均線に対する株価の位置を分析"""
+        ma_positions = []
+        
+        print(f"\n移動平均線分析を開始... 処理対象件数: {len(df)}")
+        
+        for _, trade in df.iterrows():
+            try:
+                print(f"\n処理中: {trade['ticker']}")
+                
+                # 決算前250日間のデータを取得(200日MAの計算のため)
+                entry_date = pd.to_datetime(trade['entry_date'])
+                pre_earnings_start = (entry_date - timedelta(days=300)).strftime('%Y-%m-%d')
+                
+                # 未来の日付の場合は現在の日付を使用
+                current_date = datetime.now()
+                if entry_date > current_date:
+                    print(f"警告: 未来の日付({entry_date.strftime('%Y-%m-%d')})が指定されています。現在の日付を使用します。")
+                    entry_date = current_date
+                
+                print(f"データ取得期間: {pre_earnings_start} から {entry_date.strftime('%Y-%m-%d')}")
+                
+                stock_data = self.get_historical_data(
+                    trade['ticker'],
+                    pre_earnings_start,
+                    entry_date.strftime('%Y-%m-%d')
+                )
+                
+                print(f"データ取得結果: {stock_data is not None}")
+                if stock_data is not None:
+                    print(f"データ件数: {len(stock_data)}")
+                
+                if stock_data is not None and len(stock_data) >= 200:
+                    # 移動平均線を計算
+                    stock_data['MA200'] = stock_data['Close'].rolling(window=200).mean()
+                    stock_data['MA50'] = stock_data['Close'].rolling(window=50).mean()
+                    
+                    # 最新の株価と移動平均線の位置関係を計算
+                    latest_close = stock_data['Close'].iloc[-1]
+                    latest_ma200 = stock_data['MA200'].iloc[-1]
+                    latest_ma50 = stock_data['MA50'].iloc[-1]
+                    
+                    print(f"最新の株価: ${latest_close:.2f}")  # デバッグログ追加
+                    print(f"MA200: ${latest_ma200:.2f}")  # デバッグログ追加
+                    print(f"MA50: ${latest_ma50:.2f}")  # デバッグログ追加
+                    
+                    # MA200に対する位置のカテゴリ分類
+                    ma200_diff = (latest_close - latest_ma200) / latest_ma200 * 100
+                    if ma200_diff > 30:
+                        ma200_category = 'Very Far Above MA200 (>30%)'
+                    elif ma200_diff > 15:
+                        ma200_category = 'Far Above MA200 (15-30%)'
+                    elif ma200_diff > 0:
+                        ma200_category = 'Above MA200 (0-15%)'
+                    elif ma200_diff > -15:
+                        ma200_category = 'Below MA200 (-15-0%)'
+                    else:
+                        ma200_category = 'Very Far Below MA200 (<-15%)'
+                    
+                    # MA50に対する位置のカテゴリ分類
+                    ma50_diff = (latest_close - latest_ma50) / latest_ma50 * 100
+                    if ma50_diff > 20:
+                        ma50_category = 'Very Far Above MA50 (>20%)'
+                    elif ma50_diff > 10:
+                        ma50_category = 'Far Above MA50 (10-20%)'
+                    elif ma50_diff > 0:
+                        ma50_category = 'Above MA50 (0-10%)'
+                    elif ma50_diff > -10:
+                        ma50_category = 'Below MA50 (-10-0%)'
+                    else:
+                        ma50_category = 'Very Far Below MA50 (<-10%)'
+                    
+                    ma_positions.append({
+                        'ticker': trade['ticker'],
+                        'entry_date': trade['entry_date'],
+                        'ma200_category': ma200_category,
+                        'ma50_category': ma50_category,
+                        'pnl_rate': trade['pnl_rate'],
+                        'pnl': trade['pnl']
+                    })
+                    print(f"銘柄 {trade['ticker']} の分析完了")
+                    
+                else:
+                    print(f"十分なヒストリカルデータがありません")
+                    
+            except Exception as e:
+                print(f"エラー（{trade['ticker']}）: {str(e)}")
+                continue
+        
+        result_df = pd.DataFrame(ma_positions)
+        print(f"\n分析完了: {len(result_df)}件")
+        
+        # データが存在する場合のみカテゴリを設定
+        if not result_df.empty:
+            print(f"カラム: {result_df.columns.tolist()}")
+            
+            # MA200カテゴリに順序を設定
+            if 'ma200_category' in result_df.columns:
+                result_df['ma200_category'] = pd.Categorical(
+                    result_df['ma200_category'],
+                    categories=[
+                        'Very Far Below MA200 (<-15%)',
+                        'Below MA200 (-15-0%)',
+                        'Above MA200 (0-15%)',
+                        'Far Above MA200 (15-30%)',
+                        'Very Far Above MA200 (>30%)'
+                    ],
+                    ordered=True
+                )
+            
+            # MA50カテゴリに順序を設定
+            if 'ma50_category' in result_df.columns:
+                result_df['ma50_category'] = pd.Categorical(
+                    result_df['ma50_category'],
+                    categories=[
+                        'Very Far Below MA50 (<-10%)',
+                        'Below MA50 (-10-0%)',
+                        'Above MA50 (0-10%)',
+                        'Far Above MA50 (10-20%)',
+                        'Very Far Above MA50 (>20%)'
+                    ],
+                    ordered=True
+                )
+        
+        return result_df
+
+    def _generate_metrics_html(self, df):
+        """メトリクスカードのHTML生成"""
+        metrics = self.calculate_metrics()
+        
+        metrics_html = f"""
+            <div class="metric-card">
+                <h3>{self.get_text('total_trades')}</h3>
+                <div class="metric-value">{metrics['number_of_trades']}</div>
+            </div>
+            <div class="metric-card">
+                <h3>CAGR</h3>
+                <div class="metric-value">{metrics['cagr']:.2f}%</div>
+            </div>
+            <div class="metric-card">
+                <h3>{self.get_text('win_rate')}</h3>
+                <div class="metric-value">{metrics['win_rate']:.1f}%</div>
+            </div>
+            <div class="metric-card">
+                <h3>{self.get_text('avg_pnl')}</h3>
+                <div class="metric-value">{metrics['avg_win_loss_rate']:.2f}%</div>
+            </div>
+            <div class="metric-card">
+                <h3>{self.get_text('profit_factor')}</h3>
+                <div class="metric-value">{metrics['profit_factor']:.2f}</div>
+            </div>
+            <div class="metric-card">
+                <h3>{self.get_text('max_drawdown')}</h3>
+                <div class="metric-value">{metrics['max_drawdown_pct']:.2f}%</div>
+            </div>
+            <div class="metric-card">
+                <h3>{self.get_text('total_return')}</h3>
+                <div class="metric-value">{metrics['total_return_pct']:.2f}%</div>
+            </div>
+            <div class="metric-card">
+                <h3>{self.get_text('expected_value')}</h3>
+                <div class="metric-value">{metrics['expected_value_pct']:.2f}%</div>
+            </div>
+            <div class="metric-card">
+                <h3>{self.get_text('calmar_ratio')}</h3>
+                <div class="metric-value">{metrics['calmar_ratio']:.2f}</div>
+            </div>
+            <div class="metric-card">
+                <h3>{self.get_text('pareto_ratio')}</h3>
+                <div class="metric-value">{metrics['pareto_ratio']:.1f}%</div>
+            </div>
+        """
+        
+        return metrics_html
+
+    def _generate_trades_table_html(self):
+        """トレード履歴テーブルのHTML生成"""
+        rows = []
+        df = pd.DataFrame(self.trades).sort_values('entry_date', ascending=False)
+        
+        for _, trade in df.iterrows():
+            pnl_class = 'profit' if trade['pnl'] >= 0 else 'loss'
+            holding_period = f"{trade['holding_period']}{self.get_text('days')}"
+            
+            row = f"""
+                <tr>
+                    <td>{trade['ticker']}</td>
+                    <td>{pd.to_datetime(trade['entry_date']).strftime('%Y-%m-%d')}</td>
+                    <td>${trade['entry_price']:.2f}</td>
+                    <td>{pd.to_datetime(trade['exit_date']).strftime('%Y-%m-%d')}</td>
+                    <td>${trade['exit_price']:.2f}</td>
+                    <td>{holding_period}</td>
+                    <td>{trade['shares']}</td>
+                    <td class="{pnl_class}">{trade['pnl_rate']:.2f}%</td>
+                    <td class="{pnl_class}">${trade['pnl']:.2f}</td>
+                    <td>{trade['exit_reason']}</td>
+                </tr>
+            """
+            rows.append(row)
+        
+        table = f"""
+            <table class="trades-table">
+                <thead>
+                    <tr>
+                        <th>{self.get_text('symbol')}</th>
+                        <th>{self.get_text('entry_date')}</th>
+                        <th>{self.get_text('entry_price')}</th>
+                        <th>{self.get_text('exit_date')}</th>
+                        <th>{self.get_text('exit_price')}</th>
+                        <th>{self.get_text('holding_period')}</th>
+                        <th>{self.get_text('shares')}</th>
+                        <th>{self.get_text('pnl_rate')}</th>
+                        <th>{self.get_text('pnl')}</th>
+                        <th>{self.get_text('exit_reason')}</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {''.join(rows)}
+                </tbody>
+            </table>
+        """
+        
+        return table
+
+    def get_market_cap(self, symbol):
+        """FMPから時価総額を取得"""
+        try:
+            # FMPクライアントを使用して企業プロファイルを取得
+            profile_data = self.fmp_client.get_company_profile(symbol)
+            if profile_data:
+                market_cap = profile_data.get('mktCap')
+                if market_cap:
+                    return float(market_cap)
+            return None
+            
+        except Exception as e:
+            print(f"時価総額の取得エラー ({symbol}): {str(e)}")
+            return None
+
+    def _analyze_volume_trend(self, df):
+        """決算前の出来高トレンドを分析"""
+        volume_trends = []
+        
+        for _, trade in df.iterrows():
+            # 決算前90日間のデータを取得(60日平均と20日平均の比較のため)
+            pre_earnings_start = (pd.to_datetime(trade['entry_date']) - 
+                                timedelta(days=90)).strftime('%Y-%m-%d')
+            stock_data = self.get_historical_data(
+                trade['ticker'],
+                pre_earnings_start,
+                trade['entry_date']
+            )
+            
+            if stock_data is not None and len(stock_data) >= 60:
+                # 直近20日と過去60日の平均出来高を計算
+                recent_volume = stock_data['Volume'].tail(20).mean()
+                historical_volume = stock_data['Volume'].tail(60).mean()
+                
+                # 出来高変化率を計算
+                volume_change = ((recent_volume - historical_volume) / 
+                               historical_volume * 100)
+                
+                # 変化率に基づいてカテゴリ分類（5段階）
+                if volume_change >= 100:
+                    volume_category = 'Very Large Increase (>100%)'
+                elif volume_change >= 50:
+                    volume_category = 'Large Increase (50-100%)'
+                elif volume_change >= 20:
+                    volume_category = 'Moderate Increase (20-50%)'
+                elif volume_change >= -20:
+                    volume_category = 'Neutral (-20-20%)'
+                else:
+                    volume_category = 'Decrease (<-20%)'
+                
+                volume_trends.append({
+                    'ticker': trade['ticker'],
+                    'entry_date': trade['entry_date'],
+                    'volume_change': volume_change,
+                    'volume_category': volume_category,
+                    'pnl_rate': trade['pnl_rate'],
+                    'pnl': trade['pnl']  # pnlを追加
+                })
+        
+        return pd.DataFrame(volume_trends)
+
+    def gather_trade_result(self):
+        """Alpacaから実際のトレード結果を取得"""
+        print("\nAlpacaからトレード結果を取得します...")
+        print(f"期間: {self.start_date} から {self.end_date}")
+        
+        # 1. トレードデータの取得
+        print("\n1. トレード履歴の取得中...")
+        df_trades = self.get_activities(self.start_date, self.end_date)
+        
+        if df_trades.empty:
+            print("指定期間内のトレードがありません")
+            return
+        
+        print(f"取得したトレード数: {len(df_trades)}")
+        
+        # 2. 株式分割情報の取得
+        print("\n2. 株式分割情報の取得中...")
+        df_splits = self.get_corporate_actions(
+            self.start_date, 
+            self.end_date, 
+            df_trades['symbol'].unique().tolist()
+        )
+        
+        # 3. トレードデータの処理
+        print("\n3. トレードデータの処理中...")
+        self.process_trade_data(df_trades, df_splits)
+        
+        print("\n4. トレード処理完了")
+        print(f"処理したトレード数: {len(self.trades)}")
+        
+        # 初期資本を計算（最初のトレード時点の資産額）
+        if self.trades:
+            # トレードを日付順にソート
+            sorted_trades = sorted(self.trades, key=lambda x: pd.to_datetime(x['entry_date']))
+            
+            # 最初のトレード日の資産額を取得
+            first_trade_date = pd.to_datetime(sorted_trades[0]['entry_date'])
+            
+            # 最初のトレード日の前日の資産額を初期資本とする
+            prev_day = (first_trade_date - pd.Timedelta(days=1)).strftime('%Y-%m-%d')
+            try:
+                self.initial_capital = self.get_account_equity_at_date(prev_day)
+                print(f"初期資本: ${self.initial_capital:,.2f} ({prev_day}時点)")
+            except Exception as e:
+                print(f"初期資本の取得に失敗しました: {str(e)}")
+                print(f"デフォルト値を使用します: ${self.initial_capital:,.2f}")
+        
+        # 最終資産を記録
+        self.final_capital = self.get_account_equity()
+        print(f"最終資産: ${self.final_capital:,.2f}")
+
+    def get_activities(self, start_date: str, end_date: str) -> pd.DataFrame:
+        """
+        Alpaca APIからトレード履歴を取得
+        
+        Args:
+            start_date (str): 開始日 (YYYY-MM-DD)
+            end_date (str): 終了日 (YYYY-MM-DD)
+            
+        Returns:
+            pd.DataFrame: トレード履歴のDataFrame
+        """
+        # Alpaca API クライアントの初期化
+        api = tradeapi.REST(
+            ALPACA_API_KEY,
+            ALPACA_SECRET_KEY,
+            base_url=ALPACA_API_URL,
+            api_version='v2'
+        )
+
+        activities = []
+        page_token = None
+
+        # ページネーションを使用して全てのトレード履歴を取得
+        while True:
+            try:
+                response = api.get_activities(
+                    activity_types='FILL',
+                    after=f"{start_date}T00:00:00Z",
+                    until=f"{end_date}T23:59:59Z",
+                    page_token=page_token,
+                    direction='asc',
+                    page_size=100
+                )
+
+                if not response:
+                    break
+
+                # 各アクティビティをディクショナリに変換
+                for activity in response:
+                    activities.append({
+                        'symbol': activity.symbol,
+                        'side': activity.side.lower(),
+                        'qty': float(activity.qty),
+                        'price': float(activity.price),
+                        'transaction_time': pd.to_datetime(activity.transaction_time),
+                        'order_id': activity.order_id,
+                        'type': activity.type
+                    })
+
+                # レスポンスが100件未満なら、これ以上のページはない
+                if len(response) < 100:
+                    break
+                
+                # 次のページのトークンを設定
+                page_token = response[-1].id
+
+            except Exception as e:
+                print(f"トレード履歴の取得中にエラーが発生: {str(e)}")
+                break
+
+        # アクティビティをDataFrameに変換
+        df = pd.DataFrame(activities)
+        
+        # 日付でソート
+        if not df.empty:
+            df = df.sort_values('transaction_time').reset_index(drop=True)
+        
+        return df
+
+    def get_corporate_actions(self, start_date: str, end_date: str, symbols: List[str] = None) -> pd.DataFrame:
+        """
+        株式分割などの企業アクションを取得
+        
+        Args:
+            start_date (str): 開始日 (YYYY-MM-DD)
+            end_date (str): 終了日 (YYYY-MM-DD)
+            symbols (List[str], optional): 銘柄リスト
+            
+        Returns:
+            pd.DataFrame: 企業アクション情報のDataFrame
+        """
+        try:
+            # APIエンドポイントの設定
+            base_url = ALPACA_API_URL.replace('api.', 'data.')
+            url = f"{base_url}/v1/corporate-actions"
+            
+            headers = {
+                "APCA-API-KEY-ID": ALPACA_API_KEY,
+                "APCA-API-SECRET-KEY": ALPACA_SECRET_KEY,
+                "accept": "application/json"
+            }
+            
+            # クエリパラメータの設定
+            params = {
+                "types": "forward_split",  # 株式分割のみ取得
+                "start": start_date,
+                "end": end_date,
+                "limit": 1000,
+                "sort": "asc"
+            }
+            
+            # 銘柄が指定されている場合はカンマ区切りで追加
+            if symbols:
+                params["symbols"] = ",".join(symbols)
+                print(f"\n{len(symbols)}銘柄の企業アクション情報を取得")
+                print(f"期間: {start_date} から {end_date}")
+            
+            # APIリクエストの実行
+            response = requests.get(url, headers=headers, params=params)
+            response.raise_for_status()
+            data = response.json()
+            
+            # レスポンスデータの処理
+            corporate_actions = []
+            if isinstance(data, dict) and 'corporate_actions' in data:
+                forward_splits = data['corporate_actions'].get('forward_splits', [])
+                for split in forward_splits:
+                    split_ratio = float(split['new_rate']) / float(split['old_rate'])
+                    corporate_actions.append({
+                        'symbol': split['symbol'],
+                        'split_date': split['ex_date'],
+                        'ratio': split_ratio
+                    })
+                    print(f"株式分割を検出: {split['symbol']}, 日付: {split['ex_date']}, "
+                          f"比率: {split['old_rate']}:{split['new_rate']}")
+            
+            # DataFrameの作成とフォーマット
+            df = pd.DataFrame(corporate_actions)
+            if not df.empty:
+                # UTCタイムゾーンとして解釈
+                df['split_date'] = pd.to_datetime(df['split_date']).dt.tz_localize('UTC')
+                df = df.sort_values('split_date').reset_index(drop=True)
+            
+            return df
+            
+        except Exception as e:
+            print(f"企業アクション情報の取得中にエラーが発生: {str(e)}")
+            if hasattr(e, 'response'):
+                print(f"レスポンスステータス: {e.response.status_code}")
+                print(f"レスポンス内容: {e.response.text}")
+            
+            # エラー時は空のDataFrameを返す
+            return pd.DataFrame(columns=['symbol', 'split_date', 'ratio'])
+
+    def process_trade_data(self, df_trades: pd.DataFrame, df_splits: pd.DataFrame):
+        """
+        トレードデータを処理してFIFO方式で損益を計算
+        
+        Args:
+            df_trades (pd.DataFrame): トレード履歴
+            df_splits (pd.DataFrame): 株式分割情報
+        """
+        if df_trades.empty:
+            return
+        
+        # 1) まず時系列順にソート
+        df_trades = df_trades.sort_values(by='transaction_time').reset_index(drop=True)
+
+        # 2) 株式分割を適用
+        for idx, row in df_splits.iterrows():
+            symbol = row['symbol']
+            split_time = row['split_date']
+            ratio = row['ratio']
+
+            mask = (df_trades['symbol'] == symbol) & (df_trades['transaction_time'] >= split_time)
+            df_trades.loc[mask, 'qty'] = df_trades.loc[mask, 'qty'] * ratio
+            df_trades.loc[mask, 'price'] = df_trades.loc[mask, 'price'] / ratio
+
+        # 3) FIFO方式で損益を計算
+        trades_summary = []
+        positions = {}  # symbol -> [(qty, price, entry_time)]
+
+        for _, trade in df_trades.iterrows():
+            symbol = trade['symbol']
+            side = trade['side']
+            qty = float(trade['qty'])
+            price = float(trade['price'])
+            time = trade['transaction_time']
+            
+            if symbol not in positions:
+                positions[symbol] = []
+
+            if side == 'buy':
+                # 買い注文の処理
+                positions[symbol].append((qty, price, time))
+                
+            elif side == 'sell' and positions[symbol]:
+                # 売り注文の処理
+                remaining_sell = qty
+                
+                while remaining_sell > 0 and positions[symbol]:
+                    buy_qty, buy_price, buy_time = positions[symbol][0]
+                    sell_qty = min(remaining_sell, buy_qty)
+                    
+                    # 損益の計算
+                    pnl = (price - buy_price) * sell_qty
+                    pnl_pct = ((price / buy_price) - 1) * 100
+                    
+                    # ポジションの更新
+                    if sell_qty == buy_qty:
+                        positions[symbol].pop(0)
+                    else:
+                        positions[symbol][0] = (buy_qty - sell_qty, buy_price, buy_time)
+                    
+                    remaining_sell -= sell_qty
+                    
+                    # ギャップサイズの計算
+                    # 前日の終値をFMPのAPIから取得
+                    prev_day = time.date() - pd.Timedelta(days=1)
+                    prev_close = self.get_previous_close(symbol, prev_day)
+                    gap_size = ((price / prev_close) - 1) * 100 if prev_close else 0
+                    
+                    # 保有期間の計算
+                    holding_period = (time - buy_time).days
+                    
+                    # トレード記録を追加
+                    trade_record = {
+                        'entry_date': buy_time.strftime('%Y-%m-%d'),
+                        'exit_date': time.strftime('%Y-%m-%d'),
+                        'ticker': symbol,
+                        'shares': sell_qty,
+                        'entry_price': buy_price,
+                        'exit_price': price,
+                        'pnl': pnl,
+                        'pnl_rate': pnl_pct,
+                        'holding_period': holding_period,
+                        'exit_reason': 'sell',  # 実際のトレードでは理由は不明
+                        'gap': gap_size
+                    }
+                    
+                    self.trades.append(trade_record)
+
+    def get_previous_close(self, symbol: str, date: datetime.date) -> float:
+        """
+        FMPのAPIから指定された銘柄の前日終値を取得
+        
+        Args:
+            symbol (str): 銘柄コード（例: AAPL, BF.B, BF.B.US など）
+            date (datetime.date): 日付
+            
+        Returns:
+            float: 前日終値
+        """
+        try:
+            # .USを除去（存在する場合）
+            base_symbol = symbol[:-3] if symbol.endswith('.US') else symbol
+            
+            # FMPクライアントを使用して履歴データを取得
+            from_date = (date - pd.Timedelta(days=5)).strftime('%Y-%m-%d')  # 5日前からのデータを取得
+            to_date = date.strftime('%Y-%m-%d')
+            
+            price_data = self.fmp_client.get_historical_price_data(
+                symbol=base_symbol,
+                from_date=from_date,
+                to_date=to_date
+            )
+            
+            # 指定日より前の最新の終値を探す
+            if price_data and len(price_data) > 0:
+                for data_point in reversed(price_data):
+                    price_date = pd.to_datetime(data_point['date']).date()
+                    if price_date < date:
+                        # FMPでは調整済み終値は'adjClose'フィールド
+                        return float(data_point.get('adjClose', data_point.get('close')))
+            
+            return None
+            
+        except Exception as e:
+            print(f"{symbol}の前日終値取得中にエラーが発生: {str(e)}")
+            return None
+
+    def get_account_equity(self) -> float:
+        """
+        Alpaca APIから現在の口座資産額を取得
+        
+        Returns:
+            float: 口座資産額
+        """
+        try:
+            api = tradeapi.REST(
+                ALPACA_API_KEY,
+                ALPACA_SECRET_KEY,
+                base_url=ALPACA_API_URL,
+                api_version='v2'
+            )
+            account = api.get_account()
+            return float(account.equity)
+        except Exception as e:
+            print(f"口座資産額の取得中にエラーが発生: {str(e)}")
+            return self.initial_capital  # エラー時は初期資本を返す
+
+    def get_account_equity_at_date(self, date: str) -> float:
+        """
+        指定日時点の口座資産額を取得（ポートフォリオ履歴APIを使用）
+        
+        Args:
+            date (str): 日付 (YYYY-MM-DD)
+            
+        Returns:
+            float: 指定日時点の口座資産額
+        """
+        try:
+            api = tradeapi.REST(
+                ALPACA_API_KEY,
+                ALPACA_SECRET_KEY,
+                base_url=ALPACA_API_URL,
+                api_version='v2'
+            )
+            
+            # 日付をdatetimeオブジェクトに変換して、その日の開始と終了を設定
+            date_obj = datetime.strptime(date, '%Y-%m-%d')
+            start_date = date_obj.strftime('%Y-%m-%d')
+            end_date = (date_obj + timedelta(days=1)).strftime('%Y-%m-%d')
+            
+            # APIのパラメータ形式に合わせて日付を指定
+            # 公式ドキュメントに基づいて正しいパラメータを使用
+            portfolio_history = api.get_portfolio_history(
+                timeframe="1D",
+                date_start=start_date,
+                date_end=end_date,
+                extended_hours=False
+            )
+            
+            if portfolio_history and portfolio_history.equity and len(portfolio_history.equity) > 0:
+                # 最後の値を取得
+                return float(portfolio_history.equity[-1])
+            else:
+                # データがない場合は現在の資産額を返す
+                print(f"警告: {date}時点の資産額データがありません。現在の資産額を使用します。")
+                return self.get_account_equity()
+                
+        except Exception as e:
+            print(f"{date}時点の資産額取得中にエラーが発生: {str(e)}")
+            # エラー時はデフォルト値を返す
+            return 10000.0  # デフォルト値
 
 def main():
-    """メイン実行関数"""
-    parser = argparse.ArgumentParser(description='Alpaca取引レポート生成')
-    parser.add_argument('--start-date', default='2023-01-01', help='開始日 (YYYY-MM-DD)')
-    parser.add_argument('--end-date', default='2023-12-31', help='終了日 (YYYY-MM-DD)')
-    parser.add_argument('--account-type', default='paper', choices=['paper', 'live'], help='アカウント種別')
-    parser.add_argument('--output', default=None, help='出力ファイル名（デフォルト: reports/trade_report_YYYYMMDD_HHMMSS.html）')
+    parser = argparse.ArgumentParser(description='Alpacaトレード結果のレポート生成')
+    parser.add_argument('--start_date', help='開始日 (YYYY-MM-DD)', default=None)
+    parser.add_argument('--end_date', help='終了日 (YYYY-MM-DD)', default=None)
+    parser.add_argument('--language', choices=['ja', 'en'], default='en',
+                      help='レポートの言語 (デフォルト: 英語)')
     
     args = parser.parse_args()
     
-    try:
-        # 設定作成
-        config = TradeReportConfig(
-            start_date=args.start_date,
-            end_date=args.end_date,
-            account_type=args.account_type
-        )
-        
-        # レポート生成
-        report = TradeReport(config)
-        report.generate_report(args.output)
-        
-    except Exception as e:
-        logger.error(f"プログラム実行エラー: {e}")
-        raise
+    # 開始日が指定されていない場合は1ヶ月前に設定
+    if not args.start_date:
+        start_date = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
+    else:
+        start_date = args.start_date
+    
+    # 終了日が指定されていない場合は現在の日付に設定
+    if not args.end_date:
+        end_date = datetime.now().strftime('%Y-%m-%d')
+    else:
+        end_date = args.end_date
 
+    # レポート生成インスタンスの作成
+    report = TradeReport(
+        start_date=start_date,
+        end_date=end_date,
+        language=args.language
+    )
+    
+    # トレード結果の取得
+    report.gather_trade_result()
+    
+    # レポートの生成
+    if report.trades:
+        report.generate_report()
+        report.generate_html_report()
+    else:
+        print("指定期間内のトレードがありません。レポートは生成されません。")
 
-if __name__ == "__main__":
-    main()
+if __name__ == '__main__':
+    main() 

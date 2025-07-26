@@ -330,9 +330,9 @@ class FMPDataFetcher:
             missing_symbols = set(target_symbols) - found_symbols
             
             if missing_symbols:
-                logger.warning(f"Could not find earnings data for {missing_symbols} via individual API, falling back to bulk calendar")
-                # バルクカレンダーにフォールバック（ただし、特定銘柄でフィルタリング）
-                # このまま続行して通常のバルク取得を実行
+                logger.info(f"Could not find earnings data for {missing_symbols} via individual API")
+                # フォールバック処理は行わず、取得できたデータのみ返す
+                return specific_earnings
             else:
                 # すべての銘柄のデータが取得できた場合は返す
                 return specific_earnings
