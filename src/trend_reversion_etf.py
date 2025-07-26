@@ -3,7 +3,6 @@ import datetime
 import pandas as pd
 import time
 from datetime import timedelta
-from zoneinfo import ZoneInfo
 import math
 import numpy as np
 import matplotlib.pyplot as plt
@@ -21,15 +20,16 @@ import uptrend_stocks
 import strategy_allocation
 import risk_management
 
+from common_constants import ACCOUNT, TIMEZONE
 load_dotenv()
 
-ALPACA_ACCOUNT = 'live'
+ALPACA_ACCOUNT = ACCOUNT.get_account_type()  # Migrated from common_constants
 
 # API クライアント初期化
 alpaca_client = get_alpaca_client(ALPACA_ACCOUNT)
 
-TZ_NY = ZoneInfo("US/Eastern")
-TZ_UTC = ZoneInfo('UTC')
+TZ_NY = TIMEZONE.NY  # Migrated from common_constants
+TZ_UTC = TIMEZONE.UTC  # Migrated from common_constants
 
 # LONG_SYMBOLS = ["IWM", "IWR", "EQAL", "SMH", "IPO"]
 LONG_SYMBOLS = ["IWR", "TNA"]

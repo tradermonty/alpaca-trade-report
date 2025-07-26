@@ -3,19 +3,16 @@ import numpy as np
 import pandas as pd
 from datetime import datetime, timedelta
 from scipy.stats import linregress
-from zoneinfo import ZoneInfo
 import os
 from dotenv import load_dotenv
 from alpaca_trade_api.rest import TimeFrame, TimeFrameUnit
 from api_clients import get_alpaca_client
 
+from common_constants import TIMEZONE
 load_dotenv()
 
-# import matplotlib
-# matplotlib.use('TkAgg')
-
-TZ_NY = ZoneInfo("US/Eastern")
-TZ_UTC = ZoneInfo('UTC')
+TZ_NY = TIMEZONE.NY  # Migrated from common_constants
+TZ_UTC = TIMEZONE.UTC  # Migrated from common_constants
 
 def calculate_slope(series, window=5):
     slopes = [np.nan]*window
@@ -43,27 +40,6 @@ def get_market_indicator(api, symbol='SPY', limit=200):
     data['MA200'] = data['close'].rolling(window=200).mean()
     return data
 
-
-# def determine_market_trend(data, threshold=0.1):
-#     # 50日移動平均線の傾きを計算（より長いウィンドウサイズを使用）
-#     data['MA50_Slope'] = calculate_slope(data['MA50'], window=5)
-
-#     # ヒステリシスを導入したトレンド判定
-#     data['Trend'] = ''
-#     current_trend = 'neutral'
-#     for i in range(1, len(data)):
-#         slope = data['MA50_Slope'].iloc[i]
-#         if current_trend in ['neutral', 'bear'] and slope > threshold:
-#             current_trend = 'bull'
-#         elif current_trend in ['neutral', 'bull'] and slope < -threshold:
-#             current_trend = 'bear'
-#         data.at[data.index[i], 'Trend'] = current_trend
-
-#     # デバッグ用の出力を追加
-#     print(f"Latest MA50 slope: {data['MA50_Slope'].iloc[-1]:.4f}")
-#     print(f"Threshold used: {threshold}")
-
-#     return data['Trend'].iloc[-1]
 
 def determine_market_trend(data, threshold=0.1):
     # 50日移動平均線の傾きを計算
@@ -168,31 +144,6 @@ def get_target_value(strategy, account='live'):
     return target_value
 
 
-# def plot_market_trend(data):
-#     import matplotlib.pyplot as plt
-#     import matplotlib.dates as mdates
-#
-#     fig, ax = plt.subplots(figsize=(15, 7))
-#     ax.plot(data.index, data['close'], label='S&P500 終値', color='black', linewidth=1)
-#     ax.plot(data.index, data['MA50'], label='50日移動平均線', color='blue', linewidth=1)
-#
-#     # 強気・弱気の期間を塗り分け
-#     bullish = data['Trend'] == 'bull'
-#     bearish = data['Trend'] == 'bear'
-#
-#     ax.fill_between(data.index, ax.get_ylim()[0], ax.get_ylim()[1], where=bullish, facecolor='green', alpha=0.1)
-#     ax.fill_between(data.index, ax.get_ylim()[0], ax.get_ylim()[1], where=bearish, facecolor='red', alpha=0.1)
-#
-#     # グラフの設定
-#     ax.xaxis.set_major_locator(mdates.YearLocator())
-#     ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y'))
-#     plt.xticks(rotation=45)
-#     ax.set_title('S&P500 and 50 days MA')
-#     ax.set_xlabel('Date')
-#     ax.set_ylabel('Price')
-#     ax.legend()
-#     plt.tight_layout()
-#     plt.show()
 
 
 if __name__ == "__main__":

@@ -9,19 +9,19 @@ from api_clients import get_alpaca_client
 import pandas_ta as ta
 import pandas as pd
 import time
-from zoneinfo import ZoneInfo
 import math
 
+from common_constants import ACCOUNT, TIMEZONE
 load_dotenv()
 
 
-ALPACA_ACCOUNT = 'paper_short'  # Changed to match api_clients mapping
+ALPACA_ACCOUNT = ACCOUNT.get_account_type(override="paper_short")  # Migrated from common_constants  # Changed to match api_clients mapping
 
 # API クライアント初期化
 alpaca_client = get_alpaca_client(ALPACA_ACCOUNT)
 
-TZ_NY = ZoneInfo("US/Eastern")
-TZ_UTC = ZoneInfo('UTC')
+TZ_NY = TIMEZONE.NY  # Migrated from common_constants
+TZ_UTC = TIMEZONE.UTC  # Migrated from common_constants
 
 LIMIT_RATE = 0.006
 SLIPAGE_RATE = 0.003

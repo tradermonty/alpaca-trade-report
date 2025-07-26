@@ -84,21 +84,6 @@ def calculate_deviation_from_ma(df, ma_period=200):
     return df
 
 
-# 週足の200日移動平均が上向きかを確認する関数
-def is_weekly_ma_upward(symbol):
-    # 週足データを取得
-    weekly_data = yf.download(symbol, period='5y', interval='1wk')
-
-    # 200週移動平均を計算
-    weekly_data['MA_200w'] = weekly_data['Close'].rolling(window=200).mean()
-
-    # 直近2週間で200週移動平均線の傾きがプラスであることを確認
-    if len(weekly_data) > 200:
-        slope = weekly_data['MA_200w'].iloc[-1] - weekly_data['MA_200w'].iloc[-2]
-        return slope > 0
-    return False
-
-
 # 銘柄ごとの条件を満たすかを確認する関数
 def check_entry_conditions(symbol, deviation_threshold, rsi_min_threshold, lookback_period):
     try:

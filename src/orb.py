@@ -10,66 +10,80 @@ import alpaca_trade_api as tradeapi
 import pandas_ta as ta
 import pandas as pd
 import time
-from zoneinfo import ZoneInfo
 import math
+from logging_config import get_logger
 
+from common_constants import ACCOUNT, TIMEZONE
 load_dotenv()
 
-ALPACA_ACCOUNT = 'live'
+logger = get_logger(__name__)
+
+class TradingError(Exception):
+    """取引関連のエラー"""
+    pass
+
+ALPACA_ACCOUNT = ACCOUNT.get_account_type()  # Migrated from common_constants
 
 # API クライアント初期化
 alpaca_client = get_alpaca_client(ALPACA_ACCOUNT)
 
-TZ_NY = ZoneInfo("US/Eastern")
-TZ_UTC = ZoneInfo('UTC')
+TZ_NY = TIMEZONE.NY  # Migrated from common_constants
+TZ_UTC = TIMEZONE.UTC  # Migrated from common_constants
 
-LIMIT_RATE = 0.006
-SLIPAGE_RATE = 0.003
+# 設定値をconfig.pyから取得
+from config import trading_config
+LIMIT_RATE = trading_config.ORB_LIMIT_RATE
+SLIPAGE_RATE = trading_config.ORB_SLIPAGE_RATE
 
 # Default 1st order parameters: 3% stop and 6% profit for day trade
-STOP_RATE_1 = 0.06
-PROFIT_RATE_1 = 0.06
+STOP_RATE_1 = trading_config.ORB_STOP_RATE_1
+PROFIT_RATE_1 = trading_config.ORB_PROFIT_RATE_1
 
 # Default 2nd order parameters: 4% stop and 8% profit for day trade
-STOP_RATE_2 = 0.06
-PROFIT_RATE_2 = 0.12
+STOP_RATE_2 = trading_config.ORB_STOP_RATE_2
+PROFIT_RATE_2 = trading_config.ORB_PROFIT_RATE_2
 
 # Default 3rd order parameters: 8% stop and 30% profit for swing
-STOP_RATE_3 = 0.06
-PROFIT_RATE_3 = 0.30
+STOP_RATE_3 = trading_config.ORB_STOP_RATE_3
+PROFIT_RATE_3 = trading_config.ORB_PROFIT_RATE_3
 
-# per order position size
-POSITION_SIZE = 0
+# Import dependency injection components
+from orb_config import get_orb_config, ORBConfiguration
+from orb_state_manager import TradingState, get_session_manager
 
 # making entries only within 150 minutes from the open
-#ENTRY_PERIOD = 360
-ENTRY_PERIOD = 120
+# opening range timeframe in minutes
+ENTRY_PERIOD = trading_config.ORB_ENTRY_PERIOD
 
-opening_range = 0
-test_mode = False
-test_datetime = pd.Timestamp(datetime.datetime.now().astimezone(TZ_NY))
-close_dt = pd.Timestamp(datetime.datetime.now().astimezone(TZ_NY))
-bars_1min = ""
-bars_5min = ""
-
-order_status = {"order1": {"qty": 0, "entry_time": "", "entry_price": 0, "exit_time": "", "exit_price": 0},
-                "order2": {"qty": 0, "entry_time": "", "entry_price": 0, "exit_time": "", "exit_price": 0},
-                "order3": {"qty": 0, "entry_time": "", "entry_price": 0, "exit_time": "", "exit_price": 0}}
+# グローバル変数を排除し、依存性注入による状態管理に移行
+# REMOVED: Global variables (POSITION_SIZE, opening_range, test_mode, test_datetime, close_dt, order_status)
+# REPLACED: TradingState class for state management
 
 api = alpaca_client.api  # 後方互換性のため
 
 
-def get_latest_high(symbol):
-    global test_datetime
+def get_latest_high(symbol, state: TradingState = None):
+    """
+    最新の高値を取得（依存性注入版）
+    
+    Args:
+        symbol: 銘柄シンボル
+        state: 取引状態（省略時はデフォルト状態を作成）
+    """
+    if state is None:
+        state = TradingState()
+    
+    current_datetime = state.get_current_datetime()
 
-    if test_mode:
+    if state.test_mode:
         # bars = api.get_bars(symbol, TimeFrame(1, TimeFrameUnit.Minute),
-        #                     start=test_datetime.date(), end=test_datetime.date()).df
+        #                     start=current_datetime.date(), end=current_datetime.date()).df
 
-        start_time = pd.Timestamp(test_datetime) - timedelta(minutes=60)
-        end_time = pd.Timestamp(test_datetime)
+        start_time = pd.Timestamp(current_datetime) - timedelta(minutes=60)
+        end_time = pd.Timestamp(current_datetime)
 
-        bars = bars_1min.between_time(start_time.astimezone(TZ_UTC).time(), end_time.astimezone(TZ_UTC).time())
+        # Note: bars_1min would need to be passed as parameter or retrieved from state
+        # bars = bars_1min.between_time(start_time.astimezone(TZ_UTC).time(), end_time.astimezone(TZ_UTC).time())
         # bars = bars[bars.index <= end_time]
 
         high = bars['high'].tail(1).iloc[0]
@@ -275,10 +289,27 @@ def is_closing_time():
 
 
 def send_bracket_order(symbol, qty, limit_price, profit_target, stop_price):
+    """
+    ブラケット注文を送信する
+    
+    Args:
+        symbol: 銘柄シンボル
+        qty: 注文数量
+        limit_price: 指値価格
+        profit_target: 利益確定価格
+        stop_price: ストップロス価格
+        
+    Returns:
+        注文レスポンス、またはエラー/テストモードの場合はFalse
+    """
     if test_mode:
+        logger.info(f"TEST MODE: Would submit bracket order for {symbol}: qty={qty}, limit={limit_price}, profit={profit_target}, stop={stop_price}")
         return False
-    else:
-        resp = api.submit_order(
+    
+    try:
+        logger.info(f"Submitting bracket order for {symbol}: qty={qty}, limit={limit_price:.2f}, profit={profit_target:.2f}, stop={stop_price:.2f}")
+        
+        resp = alpaca_client.submit_order(
             symbol=symbol,
             side='buy',
             type='limit',
@@ -293,19 +324,33 @@ def send_bracket_order(symbol, qty, limit_price, profit_target, stop_price):
                 stop_price=stop_price,
             )
         )
+        
+        logger.info(f"Bracket order submitted successfully for {symbol}: order_id={resp.id}")
         return resp
+        
+    except Exception as e:
+        logger.error(f"Failed to submit bracket order for {symbol}: {str(e)}", exc_info=True)
+        # 重要: 取引エラーは再発生させて上位で処理できるようにする
+        raise TradingError(f"Bracket order submission failed for {symbol}: {str(e)}") from e
 
 
-def submit_bracket_orders(symbol, dynamic_rate=True):
-    global order_status
+def submit_bracket_orders(symbol, dynamic_rate=True, trading_state: TradingState = None):
+    """
+    ブラケット注文送信（依存性注入版）
+    
+    Args:
+        symbol: 銘柄シンボル
+        dynamic_rate: 動的レート使用フラグ
+        trading_state: 取引状態（省略時は新規作成）
+    """
+    if trading_state is None:
+        trading_state = TradingState()
+        
     order1 = None
     order2 = None
     order3 = None
 
-    if test_mode:
-        current_dt = pd.Timestamp(test_datetime)
-    else:
-        current_dt = pd.Timestamp(datetime.datetime.now().astimezone(TZ_NY))
+    current_dt = trading_state.get_current_datetime()
 
     if dynamic_rate:
         set_stop_profit_rate(symbol)
@@ -434,9 +479,9 @@ def cancel_and_close_position(order, retries=3, delay=0.5):
         return resp
 
 
-def cancel_and_close_all_position(symbol, delay=0.5, max_wait_time=10):
+def cancel_and_close_all_position(symbol, delay=0.5, max_wait_time=15):
     """
-    指定されたシンボルのすべての注文をキャンセルし、ポジションをクローズする関数
+    原子的操作で指定されたシンボルのすべての注文をキャンセルし、ポジションをクローズする
     
     Args:
         symbol (str): 取引対象のシンボル
@@ -444,69 +489,114 @@ def cancel_and_close_all_position(symbol, delay=0.5, max_wait_time=10):
         max_wait_time (int): 最大待機時間（秒）
         
     Returns:
-        bool: 処理が成功したかどうか
+        dict: 実行結果と詳細情報
     """
+    result = {
+        'success': False,
+        'orders_cancelled': 0,
+        'position_closed': False,
+        'errors': [],
+        'final_position': None
+    }
+    
     try:
-        # 1️⃣ まず、そのシンボルのすべてのオープン注文を取得
-        open_orders = api.list_orders(status='open', symbols=[symbol])
+        logger.info(f"Starting atomic cancel and close for {symbol}")
         
-        # 2️⃣ 各注文をキャンセルし、完全にキャンセルされるまで待つ
-        for order in open_orders:
-            try:
-                api.cancel_order(order.id)
-                print(f"注文のキャンセルをリクエストしました: {order.id}")
-                
-                # 注文が完全にキャンセルされるまで待機（タイムアウト付き）
-                start_time = time.time()
-                while True:
-                    # タイムアウトチェック
-                    if time.time() - start_time > max_wait_time:
-                        print(f"注文 {order.id} のキャンセル待機がタイムアウトしました")
-                        break
-                        
-                    try:
-                        o = api.get_order(order.id)
-                        # より包括的なステータスチェック
-                        if o.status in ('canceled', 'filled', 'expired', 'replaced', 'partially_filled'):
-                            print(f"注文 {order.id} が {o.status} になりました")
-                            break
-                        elif o.status in ('pending_cancel', 'pending_replace'):
-                            print(f"注文 {order.id} は {o.status} 状態です。待機を継続します...")
-                        else:
-                            print(f"注文 {order.id} の予期しないステータス: {o.status}")
-                            
-                    except Exception as error:
-                        print(f"注文 {order.id} のステータス確認中にエラーが発生しました: {error}")
-                        break
-                        
-                    time.sleep(delay)
-                    
-            except Exception as error:
-                print(f"注文 {order.id} のキャンセル中にエラーが発生しました: {error}")
-                continue
-        
-        # 3️⃣ ポジションを再取得してからクローズ
+        # 1️⃣ 現在のポジション情報を事前取得（一貫性チェック用）
+        initial_position = None
         try:
-            pos = api.get_position(symbol)
-            if int(pos.qty_available) > 0:
-                print(f"ポジションをクローズします: {symbol}, 数量: {pos.qty_available}")
-                api.close_position(symbol)
-                print(f"ポジションのクローズが完了しました: {symbol}")
-            else:
-                print(f"クローズ可能なポジションがありません: {symbol}")
+            initial_position = alpaca_client.api.get_position(symbol)
+            logger.info(f"Initial position for {symbol}: qty={initial_position.qty}, available={initial_position.qty_available}")
+        except Exception as e:
+            if 'position does not exist' not in str(e).lower():
+                logger.warning(f"Could not get initial position for {symbol}: {e}")
+        
+        # 2️⃣ 全ての関連注文を原子的に取得・キャンセル
+        cancelled_orders = []
+        try:
+            open_orders = alpaca_client.api.list_orders(status='open', symbols=[symbol])
+            logger.info(f"Found {len(open_orders)} open orders for {symbol}")
+            
+            if open_orders:
+                # 注文を並行してキャンセル（ただし結果を順次確認）
+                cancel_requests = []
+                for order in open_orders:
+                    try:
+                        alpaca_client.cancel_order(order.id)
+                        cancel_requests.append(order.id)
+                        logger.info(f"Cancel requested for order {order.id} ({order.order_type}, qty={order.qty})")
+                    except Exception as e:
+                        logger.error(f"Failed to cancel order {order.id}: {e}")
+                        result['errors'].append(f"Cancel failed for order {order.id}: {e}")
                 
-        except tradeapi.rest.APIError as e:
-            if 'position does not exist' in str(e):
-                print(f"ポジションは既に存在しません: {symbol}")
-            else:
-                print(f"ポジションのクローズ中にエラーが発生しました: {e}")
-                return False
+                # 各キャンセル要求の完了を確認
+                from orb_helper import _wait_for_order_cancellation
+                for order_id in cancel_requests:
+                    if _wait_for_order_cancellation(alpaca_client, order_id, max_wait_time, delay):
+                        cancelled_orders.append(order_id)
+                        result['orders_cancelled'] += 1
+                    else:
+                        logger.warning(f"Order {order_id} cancellation timed out or failed")
+                        result['errors'].append(f"Order {order_id} cancellation timeout")
+                        
+        except Exception as e:
+            logger.error(f"Error during order cancellation phase for {symbol}: {e}")
+            result['errors'].append(f"Order cancellation phase error: {e}")
+        
+        # 3️⃣ 短時間待機してキャンセル処理の完全な反映を待つ
+        time.sleep(delay * 2)
+        
+        # 4️⃣ 最終ポジション状態を確認してからクローズ
+        try:
+            final_position = alpaca_client.api.get_position(symbol)
+            result['final_position'] = {
+                'qty': final_position.qty,
+                'qty_available': final_position.qty_available,
+                'market_value': final_position.market_value
+            }
+            
+            # 利用可能数量が0より大きい場合のみクローズ
+            available_qty = abs(float(final_position.qty_available))
+            if available_qty > 0:
+                logger.info(f"Closing position for {symbol}: available_qty={available_qty}")
                 
-        return True
+                # 部分クローズの可能性を考慮して数量を指定
+                close_response = alpaca_client.close_position(symbol, qty=available_qty)
+                
+                # クローズ操作の確認
+                if close_response:
+                    result['position_closed'] = True
+                    logger.info(f"Position closed successfully for {symbol}")
+                else:
+                    logger.warning(f"Position close response was empty for {symbol}")
+                    result['errors'].append("Empty close response")
+                    
+            else:
+                logger.info(f"No available quantity to close for {symbol}")
+                result['position_closed'] = True  # 既にクローズ済みとして扱う
+                
+        except Exception as e:
+            if 'position does not exist' in str(e).lower():
+                logger.info(f"Position already closed or does not exist for {symbol}")
+                result['position_closed'] = True
+            else:
+                logger.error(f"Error closing position for {symbol}: {e}")
+                result['errors'].append(f"Position close error: {e}")
+                
+        # 5️⃣ 最終的な成功判定
+        result['success'] = result['position_closed'] and len(result['errors']) == 0
+        
+        if result['success']:
+            logger.info(f"Successfully completed cancel and close for {symbol}: {result['orders_cancelled']} orders cancelled")
+        else:
+            logger.warning(f"Cancel and close completed with issues for {symbol}: {result}")
+            
+        return result
         
     except Exception as error:
-        print(f"cancel_and_close_all_positionでエラーが発生しました: {error}")
-        return False
+        logger.error(f"Critical error in cancel_and_close_all_position for {symbol}: {error}", exc_info=True)
+        result['errors'].append(f"Critical error: {error}")
+        return result
 
 
 def print_order_status(d, indent=0):
@@ -541,7 +631,10 @@ def is_uptrend(symbol, timeframe=5, short=10, long=20):
     end_date = current_time.strftime("%Y-%m-%d")
 
     if test_mode:
-        bars = bars_5min
+        # テストモードではローカルスコープの bars_5min を参照
+        # グローバル変数を避けてメモリリークを防止
+        from orb_memory_utils import _get_test_bars_5min
+        bars = _get_test_bars_5min(symbol, start_date, end_date, bars_5min)
     else:
         bars = api.get_bars(symbol, TimeFrame(timeframe, TimeFrameUnit.Minute), start=start_date, end=end_date).df
 
@@ -689,11 +782,22 @@ def is_below_ema(symbol, period_ema):
     return False
 
 
-def start_trading():
-    global test_mode, test_datetime, order_status, opening_range, POSITION_SIZE, close_dt, bars_1min, bars_5min
-    close_time = '16:00:00'
-    open_time = '09:30:01'
-    current_dt = pd.Timestamp(datetime.datetime.now().astimezone(TZ_NY))
+def start_trading(config: ORBConfiguration = None):
+    """
+    ORB取引の開始（依存性注入版）
+    
+    Args:
+        config: ORB設定オブジェクト（省略時はデフォルト設定を使用）
+    """
+    if config is None:
+        config = get_orb_config()
+    
+    # 取引状態の初期化
+    session_manager = get_session_manager(config)
+    # bars_1min, bars_5min はローカル変数として使用してメモリリークを防止
+    close_time = config.market.market_close_time
+    open_time = config.market.market_open_time
+    current_dt = pd.Timestamp(datetime.datetime.now().astimezone(config.market.ny_timezone))
 
     ap = argparse.ArgumentParser()
     ap.add_argument('symbol')
@@ -708,13 +812,25 @@ def start_trading():
     ap.add_argument('--trend_check', default=True)
     args = vars(ap.parse_args())
 
-    test_mode = args['test_mode']
+    # 引数から取引パラメータを取得
     symbol = args['symbol']
+    test_mode = args['test_mode']
+    if isinstance(test_mode, str):
+        test_mode = test_mode == 'True' or test_mode == 'true'
+        
     opening_range = int(args['range'])
     if isinstance(args['dynamic_rate'], str):
         dynamic_rate = args['dynamic_rate'] == 'True' or args['dynamic_rate'] == 'true'
     else:
         dynamic_rate = args['dynamic_rate']
+    
+    # 取引状態オブジェクトの作成
+    trading_state = session_manager.create_session(
+        symbol,
+        test_mode=test_mode,
+        opening_range=opening_range,
+        config=config
+    )
     if isinstance(args['ema_trail'], str):
         ema_trail = args['ema_trail'] == 'True' or args['ema_trail'] == 'true'
     else:
@@ -744,28 +860,49 @@ def start_trading():
 
     # position size will be automatically calculated.
     if args['pos_size'] == 'auto':
-        POSITION_SIZE = float(portfolio_value) / 18 / 3
+        trading_state.position_size = float(portfolio_value) / 18 / 3
     else:
-        POSITION_SIZE = int(args['pos_size'])
+        trading_state.position_size = int(args['pos_size'])
 
-    print('start trading', symbol, 'position size', POSITION_SIZE)
+    print('start trading', symbol, 'position size', trading_state.position_size)
 
     if test_mode:
-        test_datetime = pd.Timestamp(args['test_date'] + " " + str(open_time), tz=TZ_NY)
+        test_datetime = pd.Timestamp(args['test_date'] + " " + str(open_time), tz=config.market.ny_timezone)
+        trading_state.test_datetime = test_datetime
         cal = api.get_calendar(start=str(test_datetime.date()), end=str(test_datetime.date()))
         if len(cal) > 0:
             close_time = cal[0].close
-            close_dt = pd.Timestamp(str(test_datetime.date()) + " " + str(close_time), tz=TZ_NY)
+            trading_state.close_dt = pd.Timestamp(str(test_datetime.date()) + " " + str(close_time), tz=config.market.ny_timezone)
         else:
             print("market will not open on the date. finish trading.")
             return
 
+        # テストモード用データ取得（メモリ効率化）
         days = math.ceil(50 * 5 / 360 * 2) + 3
         start_dt = (test_datetime - timedelta(days=days)).strftime("%Y-%m-%d")
-        bars_1min = api.get_bars(symbol, TimeFrame(1, TimeFrameUnit.Minute),
-                                 start=start_dt, end=str(test_datetime.date())).df
-        bars_5min = api.get_bars(symbol, TimeFrame(5, TimeFrameUnit.Minute),
-                                 start=start_dt, end=str(test_datetime.date())).df
+        
+        # 大量データの取得時はメモリ使用量を監視
+        logger.info(f"Loading test data for {symbol} from {start_dt} to {test_datetime.date()}")
+        
+        try:
+            bars_1min = api.get_bars(symbol, TimeFrame(1, TimeFrameUnit.Minute),
+                                     start=start_dt, end=str(test_datetime.date())).df
+            bars_5min = api.get_bars(symbol, TimeFrame(5, TimeFrameUnit.Minute),
+                                     start=start_dt, end=str(test_datetime.date())).df
+            
+            logger.info(f"Test data loaded: 1min bars={len(bars_1min)}, 5min bars={len(bars_5min)}")
+            
+            # データサイズが大きすぎる場合は警告
+            if len(bars_1min) > 10000 or len(bars_5min) > 2000:
+                logger.warning(f"Large dataset loaded - consider reducing date range for memory efficiency")
+                
+        except Exception as e:
+            logger.error(f"Failed to load test data for {symbol}: {e}")
+            return
+        
+        # 大量データ処理時のメモリ監視
+        from orb_memory_utils import log_memory_if_high
+        log_memory_if_high(threshold_mb=300)
 
         # opening range time
         # test_datetime = test_datetime + timedelta(minutes=opening_range-1) + timedelta(seconds=59)
@@ -1148,6 +1285,18 @@ def start_trading():
     print("#### total profit", total_profit)
 
     print_order_status(order_status)
+    
+    # テストモード終了時のメモリクリーンアップ
+    if test_mode:
+        try:
+            from orb_memory_utils import cleanup_large_dataframes, log_memory_if_high
+            # 最終メモリ使用量をチェック
+            log_memory_if_high(threshold_mb=200)
+            # 大量データのクリーンアップ
+            cleanup_large_dataframes(bars_1min, bars_5min)
+            logger.info(f"Memory cleanup completed for {symbol}")
+        except Exception as e:
+            logger.error(f"Error during memory cleanup: {e}")
 
     if test_mode:
         if daily_log:

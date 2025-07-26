@@ -1,7 +1,6 @@
 from alpaca_trade_api.rest import TimeFrame, TimeFrameUnit
 from api_clients import get_alpaca_client
 from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo
 import pandas as pd
 import time
 import smtplib
@@ -14,23 +13,29 @@ from email.mime.multipart import MIMEMultipart
 import uptrend_stocks
 import strategy_allocation
 
+from common_constants import ACCOUNT, TIMEZONE
 load_dotenv()
 
-TZ_NY = ZoneInfo("US/Eastern")
-TZ_UTC = ZoneInfo('UTC')
+TZ_NY = TIMEZONE.NY  # Migrated from common_constants
+TZ_UTC = TIMEZONE.UTC  # Migrated from common_constants
 
-test_mode = False
-test_datetime = pd.Timestamp(datetime.now().astimezone(TZ_NY)) - timedelta(days=240)
+TEST_MODE = False  # Migrated to constant naming
+TEST_DATETIME = pd.Timestamp(datetime.now().astimezone(TZ_NY)) - timedelta(days=240)
 
-ALPACA_ACCOUNT = 'live'
+ALPACA_ACCOUNT = ACCOUNT.get_account_type()  # Migrated from common_constants
 
 # API クライアント初期化
 alpaca_client = get_alpaca_client(ALPACA_ACCOUNT)
 api = alpaca_client.api  # 後方互換性のため
 
-GMAIL_PASSWORD = "ksti wzhg havs oocj"
+# Gmail App Password from environment variables
+GMAIL_PASSWORD = os.getenv('GMAIL_APP_PASSWORD')
+if not GMAIL_PASSWORD:
+    raise ValueError("GMAIL_APP_PASSWORD environment variable not set")
 
-UPTREND_THRESH = 0.25
+# 設定値をconfig.pyから取得
+from config import trading_config
+UPTREND_THRESH = trading_config.UPTREND_THRESHOLD
 
 # 投資銘柄リスト
 dividend_symbols = ['SCHD', 'TXN', 'ABBV', 'LMT', 'HD', 'CVX', 'O', 'PG', 'JNJ', 'JPM', 'PAYX',

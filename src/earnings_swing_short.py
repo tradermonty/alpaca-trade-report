@@ -17,6 +17,7 @@ from oauth2client.service_account import ServiceAccountCredentials
 import dividend_portfolio_management
 import strategy_allocation
 import risk_management
+from api_clients import get_finviz_client
 
 load_dotenv()
 
@@ -52,13 +53,8 @@ else:
 
 api = tradeapi.REST(ALPACA_API_KEY, ALPACA_SECRET_KEY, ALPACA_BASE_URL)
 
-# FinvizのAPIキー設定
-FINVIZ_API_KEY = os.getenv('FINVIZ_API_KEY')
-
-# Finvizリトライ設定
-FINVIZ_MAX_RETRIES = 5  # 最大リトライ回数
-FINVIZ_RETRY_WAIT = 1   # 初回リトライ待機時間（秒）
-
+# Finviz APIクライアント初期化
+finviz_client = get_finviz_client()
 
 # SCREENER: 基本情報フィルター
 # - 市場時価総額 (Market Cap.): $1B-$30B
@@ -71,13 +67,28 @@ FINVIZ_RETRY_WAIT = 1   # 初回リトライ待機時間（秒）
 # - 月間パフォーマンス (Performance - Month): 過去4週間で下落
 # - ボラティリティ (Volatility): 1週間で1%以上
 
-SCREENER_URL = f"https://elite.finviz.com/export.ashx?v=151&f=cap_smallover,earningsdate_yesterdayafter|todaybefore," \
-               f"fa_epsrev_en,geo_usa,sh_avgvol_o200,sh_price_o10,ta_change_d,ta_gap_d,ta_perf_4wdown,ta_volatility_1tox" \
-               f"&ft=4&o=epssurprise&ar=60&c=0,1,2,79,3,4,5,6,7,8,9,10,11,12,13," \
-               f"73,74,75,14,15,16,77,17,18,19,20,21,23,22,82,78,127,128,24,25,85,26,27,28,29,30,31,84,32,33,34,35," \
-               f"36,37,38,39,40,41,90,91,92,93,94,95,96,97,98,99,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58," \
-               f"80,83,76,60,61,62,63,64,67,89,69,81,86,87,88,65,66,71,72,103,100,101,104,102,106,107,108,109,110," \
-               f"125,126,59,68,70,111,112,113,114,115,116,117,118,119,120,121,122,123,124,105&auth={FINVIZ_API_KEY}"
+def get_earnings_short_screener_url():
+    """決算ショート戦略用のスクリーナーURLを取得"""
+    filters = {
+        "cap": "smallover",
+        "earningsdate": "yesterdayafter|todaybefore",
+        "fa_epsrev": "en",
+        "geo": "usa",
+        "sh_avgvol": "o200",
+        "sh_price": "o10",
+        "ta_change": "d",
+        "ta_gap": "d", 
+        "ta_perf": "4wdown",
+        "ta_volatility": "1tox"
+    }
+    
+    columns = "0,1,2,79,3,4,5,6,7,8,9,10,11,12,13," \
+              "73,74,75,14,15,16,77,17,18,19,20,21,23,22,82,78,127,128,24,25,85,26,27,28,29,30,31,84,32,33,34,35," \
+              "36,37,38,39,40,41,90,91,92,93,94,95,96,97,98,99,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58," \
+              "80,83,76,60,61,62,63,64,67,89,69,81,86,87,88,65,66,71,72,103,100,101,104,102,106,107,108,109,110," \
+              "125,126,59,68,70,111,112,113,114,115,116,117,118,119,120,121,122,123,124,105"
+    
+    return finviz_client.build_screener_url(filters, columns, order="epssurprise")
 
 
 NUMBER_OF_STOCKS = 5
@@ -136,61 +147,52 @@ def get_tickers_from_screener(url, num):
     filtered_df = None
     tickers = []
 
-    retries = 0
+    try:
+        df = finviz_client.get_screener_data(url)
+        if df.empty:
+            return tickers
+        
+        df['score'] = 0
 
-    while retries < FINVIZ_MAX_RETRIES:
-        resp = requests.get(url)
-        print(resp)
+        # EPS Surprise -5%以下: 1, -8%以下: 2, -15%以下: 4, -30%以下: 6
+        df['EPS Surprise'] = df['EPS Surprise'].str.replace('%', '').astype(float) / 100.0
+        df.loc[df['EPS Surprise'] < -0.05, 'score'] += 1
+        df.loc[df['EPS Surprise'] < -0.08, 'score'] += 1
+        df.loc[df['EPS Surprise'] < -0.10, 'score'] += 2
+        df.loc[df['EPS Surprise'] < -0.30, 'score'] += 2
 
-        if resp.status_code == 200:
-            df = pd.read_csv(io.BytesIO(resp.content), sep=",")
-            df['score'] = 0
+        # Revenue Surprise -2%以下: 1, -8%以下: 2, -15%以下: 3
+        df['Revenue Surprise'] = df['Revenue Surprise'].str.replace('%', '').astype(float) / 100.0
+        df.loc[df['Revenue Surprise'] < -0.02, 'score'] += 1
+        df.loc[df['Revenue Surprise'] < -0.08, 'score'] += 1
+        df.loc[df['Revenue Surprise'] < -0.15, 'score'] += 1
 
-            # EPS Surprise -5%以下: 1, -8%以下: 2, -15%以下: 4, -30%以下: 6
-            df['EPS Surprise'] = df['EPS Surprise'].str.replace('%', '').astype(float) / 100.0
-            df.loc[df['EPS Surprise'] < -0.05, 'score'] += 1
-            df.loc[df['EPS Surprise'] < -0.08, 'score'] += 1
-            df.loc[df['EPS Surprise'] < -0.10, 'score'] += 2
-            df.loc[df['EPS Surprise'] < -0.30, 'score'] += 2
+        # Price Change -1%以下: 1, -8%以下: 2
+        df['Change'] = df['Change'].str.replace('%', '').astype(float) / 100.0
+        df.loc[df['Change'] < -0.01, 'score'] += 1
+        df.loc[df['Change'] < -0.08, 'score'] += 1
 
-            # Revenue Surprise -2%以下: 1, -8%以下: 2, -15%以下: 3
-            df['Revenue Surprise'] = df['Revenue Surprise'].str.replace('%', '').astype(float) / 100.0
-            df.loc[df['Revenue Surprise'] < -0.02, 'score'] += 1
-            df.loc[df['Revenue Surprise'] < -0.08, 'score'] += 1
-            df.loc[df['Revenue Surprise'] < -0.15, 'score'] += 1
+        # Relative Volume 1.0-: 2, 1.5-: 4, 2.0-: 6
+        df.loc[df['Relative Volume'] > 1.0, 'score'] += 2
+        df.loc[df['Relative Volume'] > 1.5, 'score'] += 2
+        df.loc[df['Relative Volume'] > 2.0, 'score'] += 2
 
-            # Price Change -1%以下: 1, -8%以下: 2
-            df['Change'] = df['Change'].str.replace('%', '').astype(float) / 100.0
-            df.loc[df['Change'] < -0.01, 'score'] += 1
-            df.loc[df['Change'] < -0.08, 'score'] += 1
+        # Total score > 0
+        filtered_df = df[df['score'] > 0]
 
-            # Relative Volume 1.0-: 2, 1.5-: 4, 2.0-: 6
-            df.loc[df['Relative Volume'] > 1.0, 'score'] += 2
-            df.loc[df['Relative Volume'] > 1.5, 'score'] += 2
-            df.loc[df['Relative Volume'] > 2.0, 'score'] += 2
+        # export screening result
+        filtered_df.to_csv('earnings/screen_short_' + datetime.today().strftime('%Y-%m-%d') + '.csv', index=False)
 
-            # Total score > 0
-            filtered_df = df[df['score'] > 0]
+        filtered_df = filtered_df.sort_values(by='score', ascending=False)
 
-            # export screening result
-            filtered_df.to_csv('earnings/screen_short_' + datetime.today().strftime('%Y-%m-%d') + '.csv', index=False)
+        print(filtered_df)
 
-            filtered_df = filtered_df.sort_values(by='score', ascending=False)
+        # Filter top # tickers
+        filtered_df = filtered_df.head(num)
 
-            print(filtered_df)
-
-            # Filter top # tickers
-            filtered_df = filtered_df.head(num)
-            break
-
-        elif resp.status_code == 429:
-            retries += 1
-            wait_time = FINVIZ_RETRY_WAIT * (2 ** (retries - 1))
-            print(f"Rate limit exceeded. Retrying in {wait_time} seconds...")
-            time.sleep(wait_time)
-        else:
-            print(f"Error fetching tickers from Finviz. Status code: {resp.status_code}")
-            break
+    except Exception as e:
+        print(f"Error fetching tickers from Finviz: {e}")
+        return tickers
 
     # append tickers from screener
     if filtered_df is not None:
@@ -273,7 +275,8 @@ def swing_earnings_stocks_short():
 
     try:
         # get tickers from finviz screener
-        tickers_screener = get_tickers_from_screener(SCREENER_URL, NUMBER_OF_STOCKS)
+        screener_url = get_earnings_short_screener_url()
+        tickers_screener = get_tickers_from_screener(screener_url, NUMBER_OF_STOCKS)
 
     except Exception as error:
         print("failed to get tickers from finviz screener.")

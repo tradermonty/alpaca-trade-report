@@ -36,12 +36,10 @@ else:
 # Alpacaのニュース取得APIのエンドポイント
 ALPACA_NEWS_API_URL = "https://data.alpaca.markets/v1beta1/news"
 
-# FinvizのAPIキー設定
-FINVIZ_API_KEY = os.getenv('FINVIZ_API_KEY')
+from api_clients import get_finviz_client
 
-# Finvizリトライ設定
-FINVIZ_MAX_RETRIES = 5  # 最大リトライ回数
-FINVIZ_RETRY_WAIT = 1   # 初回リトライ待機時間（秒）
+# Finvizクライアント初期化
+finviz_client = get_finviz_client()
 
 # Alpha VantageのAPIキー設定
 ALPHA_VANTAGE_API_KEY = os.getenv('ALPHA_VANTAGE_API_KEY')
@@ -113,50 +111,39 @@ def get_news_from_alpaca(ticker, start_time, end_time):
 
 # FinvizのAPIを使ってニュースを取得
 def get_news_from_finviz(ticker, target_date):
-    url = f"https://elite.finviz.com/news_export.ashx?v=3&t={ticker}&auth={FINVIZ_API_KEY}"
-
-    retries = 0
-
-    while retries < FINVIZ_MAX_RETRIES:
-        resp = requests.get(url)
-        print(resp)
-
-        if resp.status_code == 200:
-            df = pd.read_csv(io.BytesIO(resp.content), sep=",", quotechar='"', on_bad_lines='skip', engine='python')
-            expected_columns = ['Title', 'Source', 'Date', 'Url', 'Category', 'Ticker']
-            if len(df.columns) != len(expected_columns):
-                df.columns = expected_columns
-
-            target_date = datetime.strptime(target_date, '%Y-%m-%d')
-            previous_date = target_date - timedelta(days=1)
-
-            df['Date'] = pd.to_datetime(df['Date'])
-            filtered_df = df[(df['Date'] >= previous_date) & (df['Date'] <= target_date)]
-            limited_df = filtered_df.head(10)
-
-            if len(limited_df) == 0:
-                return []
-
-            news_items = limited_df.apply(lambda row: {
-                "headline": row['Title'],
-                "summary": row['Title'],
-                "url": row['Url'],
-                "created_at": row['Date'].strftime('%Y-%m-%d %H:%M:%S'),
-            }, axis=1).tolist()
-
+    target_date_obj = datetime.strptime(target_date, '%Y-%m-%d')
+    previous_date = target_date_obj - timedelta(days=1)
+    
+    # FinvizClientを使用してニュースデータを取得
+    try:
+        news_data = finviz_client.get_news_data(
+            symbols=[ticker],
+            date_from=previous_date.strftime('%Y-%m-%d'),
+            date_to=target_date
+        )
+        
+        if news_data and len(news_data) > 0:
+            # 最大10件のニュースに制限
+            limited_news = news_data[:10]
+            
+            # 必要な形式に変換
+            news_items = []
+            for item in limited_news:
+                news_items.append({
+                    "headline": item.get('title', ''),
+                    "summary": item.get('title', ''),
+                    "url": item.get('url', ''),
+                    "created_at": item.get('date', ''),
+                })
+            
             return news_items
-
-        elif resp.status_code == 429:
-            retries += 1
-            wait_time = FINVIZ_RETRY_WAIT * (2 ** (retries - 1))
-            print(f"Rate limit exceeded. Retrying in {wait_time} seconds...")
-            time.sleep(wait_time)
         else:
-            print(f"Error fetching news from Finviz. Status code: {resp.status_code}")
+            print(f"No news found for {ticker} on Finviz")
             return []
-
-    print(f"Failed to fetch news from Finviz after {FINVIZ_MAX_RETRIES} retries.")
-    return []
+            
+    except Exception as e:
+        print(f"Error fetching news from Finviz for {ticker}: {str(e)}")
+        return []
 
 
 # Alpha VantageのAPIを使ってニュースを取得

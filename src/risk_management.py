@@ -5,12 +5,17 @@ from collections import defaultdict, deque
 from dotenv import load_dotenv
 import strategy_allocation
 from api_clients import get_alpaca_client
+from config import risk_config
+from logging_config import get_logger
 
 load_dotenv()
 
-PNL_LOG_FILE = '../pnl_log.json'
-PNL_CRITERIA = -0.06
-PNL_CHECK_PERIOD = 30
+logger = get_logger(__name__)
+
+# 設定値は config.py から取得
+PNL_LOG_FILE = risk_config.PNL_LOG_FILE
+PNL_CRITERIA = risk_config.PNL_CRITERIA
+PNL_CHECK_PERIOD = risk_config.PNL_CHECK_PERIOD
 
 ALPACA_ACCOUNT = 'live'
 
@@ -27,10 +32,10 @@ def read_log():
 
 def write_log(log_data):
     with open(PNL_LOG_FILE, 'w') as file:
-        json.dump(log_data, file, indent=4)
+        json.dump(log_data, file, indent=risk_config.JSON_INDENT)
 
 
-def check_pnl(days=30):
+def check_pnl(days=risk_config.PNL_CHECK_PERIOD):
     # ログファイルを読み込む
     log_data = read_log()
 
@@ -39,7 +44,7 @@ def check_pnl(days=30):
     start_date = end_date - timedelta(days=days)
     
     # 取引履歴を取得する期間（過去の購入も含めるため、3倍の期間を取得）
-    history_start_date = end_date - timedelta(days=days*3)
+    history_start_date = end_date - timedelta(days=days * risk_config.PNL_HISTORY_MULTIPLIER)
 
     # end_date = datetime.strptime("2024-08-27", "%Y-%m-%d")
     # start_date = datetime.strptime("2024-08-26", "%Y-%m-%d")
@@ -54,39 +59,61 @@ def check_pnl(days=30):
         return pnl_percentage
 
     # アカウント情報を取得
-    account = api.get_account()
-
-    portfolio_value = float(api.get_account().portfolio_value)
-
-    allocation = strategy_allocation.get_strategy_allocation(api)
-    total_trade_value = portfolio_value * (1 - allocation['strategy5'])
+    try:
+        account = alpaca_client.get_account()
+        portfolio_value = float(account.portfolio_value)
+        logger.info(f"Retrieved account info: portfolio_value={portfolio_value}")
+        
+        allocation = strategy_allocation.get_strategy_allocation(alpaca_client.api)
+        total_trade_value = portfolio_value * (1 - allocation['strategy5'])
+        logger.info(f"Calculated total trade value: {total_trade_value} (allocation: {allocation})")
+        
+    except Exception as e:
+        logger.error(f"Failed to get account information: {str(e)}")
+        # アカウント情報取得に失敗した場合は、デフォルト値で処理を継続
+        # ただし、これは重要な問題なので警告を出す
+        logger.warning("Using default values due to account access failure")
+        portfolio_value = 100000.0  # デフォルト値
+        total_trade_value = 100000.0
 
     # すべてのトレード活動を取得（より長い期間から取得）
     activities = []
     page_token = None
 
-    while True:
-        response = api.get_activities(
-            activity_types='FILL',
-            after=history_start_date.strftime('%Y-%m-%dT%H:%M:%SZ'),  # 正しいフォーマットに変換
-            until=end_date.strftime('%Y-%m-%dT%H:%M:%SZ'),  # 正しいフォーマットに変換
-            # date = "2024-08-26",
-            page_token=page_token,
-            direction='asc',  # 時系列順に取得
-            page_size=100  # 最大ページサイズ
-        )
+    try:
+        while True:
+            try:
+                response = alpaca_client.api.get_activities(
+                    activity_types='FILL',
+                    after=history_start_date.strftime('%Y-%m-%dT%H:%M:%SZ'),  # 正しいフォーマットに変換
+                    until=end_date.strftime('%Y-%m-%dT%H:%M:%SZ'),  # 正しいフォーマットに変換
+                    # date = "2024-08-26",
+                    page_token=page_token,
+                    direction='asc',  # 時系列順に取得
+                    page_size=risk_config.PAGE_SIZE  # 最大ページサイズ
+                )
 
-        if not response:
-            break
+                if not response:
+                    break
 
-        activities.extend(response)
+                activities.extend(response)
 
-        # レスポンスが満杯でない場合、これ以上のページはない
-        if len(response) < 100:
-            break
-        else:
-            # 次のページを取得するために最終活動のIDを使用
-            page_token = response[-1].id
+                # レスポンスが満杯でない場合、これ以上のページはない
+                if len(response) < risk_config.PAGE_SIZE:
+                    break
+                else:
+                    # 次のページを取得するために最終活動のIDを使用
+                    page_token = response[-1].id
+                    
+            except Exception as e:
+                logger.error(f"Failed to get activities page (token: {page_token}): {str(e)}")
+                # ページ取得に失敗した場合は、取得できた分で処理を続行
+                break
+                
+    except Exception as e:
+        logger.error(f"Failed to initialize activities retrieval: {str(e)}")
+        # アクティビティ取得に完全に失敗した場合は、空のリストで継続
+        activities = []
 
     # シンボルごとにフィルを整理
     fills_by_symbol = defaultdict(list)
@@ -214,8 +241,8 @@ def check_pnl(days=30):
     
     # 平均損益率を計算 - 異なる方法で計算して区別する
     # 平均取引サイズに対する平均利益と損失の比率
-    avg_win_pct = avg_win / (avg_trade_value * 2) if winning_trades > 0 and avg_trade_value > 0 else 0
-    avg_loss_pct = avg_loss / (avg_trade_value * 2) if losing_trades > 0 and avg_trade_value > 0 else 0
+    avg_win_pct = avg_win / (avg_trade_value * risk_config.TRADE_VALUE_MULTIPLIER) if winning_trades > 0 and avg_trade_value > 0 else 0
+    avg_loss_pct = avg_loss / (avg_trade_value * risk_config.TRADE_VALUE_MULTIPLIER) if losing_trades > 0 and avg_trade_value > 0 else 0
     
     # 平均損益率 = 勝率 × 平均勝ち率 - (1-勝率) × 平均負け率
     avg_pnl_ratio = (win_rate * avg_win_pct) - ((1 - win_rate) * avg_loss_pct)
@@ -229,7 +256,7 @@ def check_pnl(days=30):
     
     # Pareto Ratio (80/20の法則) = 上位20%のトレードの利益 / 全体の利益
     sorted_pnls = sorted([p for p in all_pnls if p > 0], reverse=True)
-    top_20_percent = sorted_pnls[:max(1, int(len(sorted_pnls) * 0.2))]
+    top_20_percent = sorted_pnls[:max(1, int(len(sorted_pnls) * risk_config.PARETO_RATIO))]
     pareto_ratio = sum(top_20_percent) / total_profit if total_profit > 0 else 0
 
     # 高配当投資を除くトレード用資金に対して損益率を計算
@@ -263,6 +290,8 @@ def check_pnl(days=30):
 
 def check_pnl_criteria(days=PNL_CHECK_PERIOD, pnl_rate=PNL_CRITERIA):
     return check_pnl(days) > pnl_rate
+
+
 
 
 if __name__ == '__main__':

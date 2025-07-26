@@ -2,54 +2,57 @@ import argparse
 import datetime
 from datetime import timedelta
 from alpaca_trade_api.rest import TimeFrame, TimeFrameUnit
-from api_clients import get_alpaca_client
+from api_clients import get_alpaca_client, get_finviz_client
 import pandas_ta as ta
 import pandas as pd
 import time
 import math
 import os
-from zoneinfo import ZoneInfo
 import requests
 import io
 from dotenv import load_dotenv
+from logging_config import get_logger
+from config import trading_config, timing_config, retry_config
 
 import uptrend_stocks
 import dividend_portfolio_management
 import trend_reversion_etf
 
+from common_constants import ACCOUNT, TIMEZONE
 load_dotenv()
+logger = get_logger(__name__)
 
-# FinvizのAPIキー設定
-FINVIZ_API_KEY = os.getenv('FINVIZ_API_KEY')
+# Finvizスクリーナーのフィルター設定
+EARNINGS_FILTERS = {
+    'cap': 'smallover',
+    'earningsdate': 'todayafter|tomorrowbefore',
+    'ind': 'stocksonly',
+    'sh_avgvol': 'o500',
+    'sh_price': 'o10'
+}
 
-# Finvizリトライ設定
-FINVIZ_MAX_RETRIES = 5  # 最大リトライ回数
-FINVIZ_RETRY_WAIT = 1   # 初回リトライ待機時間（秒）
+EARNINGS_COLUMNS = [
+    0,1,2,79,3,4,5,6,7,8,9,10,11,12,13,73,74,75,14,15,16,77,17,18,19,20,21,23,22,82,78,127,128,24,25,85,26,27,28,29,30,31,84,32,33,34,35,
+    36,37,38,39,40,41,90,91,92,93,94,95,96,97,98,99,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,125,126,59,68,70,80,83,76,60,61,62,63,64,67,89,69,81,86,87,88,65,66,71,72,103,
+    100,101,104,102,106,107,108,109,110,111,112,113,114,115,116,117,118,119,120,121,122,123,124,105
+]
 
-# FINVIZ_SCREEN_EARNINGS = "https://elite.finviz.com/export.ashx?v=151&p=i3&f=cap_smallover,earningsdate_todayafter|tomorrowbefore,ind_stocksonly,sh_avgvol_o500,sh_price_o10&ft=4&o=-relativevolume&ar=10&c=0,1,2,79,3,4,5,6,7,8,9,10,11,12,13,73,74,75,14,15,16,77,17,18,19,20,21,23,22,82,78,127,128,24,25,85,26,27,28,29,30,31,84,32,33,34,35,36,37,38,39,40,41,90,91,92,93,94,95,96,97,98,99,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,125,126,59,68,70,80,83,76,60,61,62,63,64,67,89,69,81,86,87,88,65,66,71,72,103,100,101,104,102,106,107,108,109,110,111,112,113,114,115,116,117,118,119,120,121,122,123,124,105&auth=0d1b37f2-0b77-4d66-8776-63ff5362f253"
-FINVIZ_SCREEN_EARNINGS = f"https://elite.finviz.com/export.ashx?v=151&p=i3&f=cap_smallover," \
-                         f"earningsdate_todayafter|tomorrowbefore,ind_stocksonly,sh_avgvol_o500," \
-                         f"sh_price_o10&ft=4&o=-relativevolume&ar=10&c=0,1,2,79,3,4,5,6,7,8,9,10,11,12,13,73,74,75," \
-                         f"14,15,16,77,17,18,19,20,21,23,22,82,78,127,128,24,25,85,26,27,28,29,30,31,84,32,33,34,35," \
-                         f"36,37,38,39,40,41,90,91,92,93,94,95,96,97,98,99,42,43,44,45,46,47,48,49,50,51,52,53,54,55," \
-                         f"56,57,58,125,126,59,68,70,80,83,76,60,61,62,63,64,67,89,69,81,86,87,88,65,66,71,72,103," \
-                         f"100,101,104,102,106,107,108,109,110,111,112,113,114,115,116,117,118,119,120,121,122,123," \
-                         f"124,105&auth={FINVIZ_API_KEY}"
-
-ALPACA_ACCOUNT = 'live'
+ALPACA_ACCOUNT = ACCOUNT.get_account_type()  # Migrated from common_constants
 
 # API クライアント初期化
 alpaca_client = get_alpaca_client(ALPACA_ACCOUNT)
+finviz_client = get_finviz_client()
 
 # スイングトレードの管理対象外
 EXCLUDED_SYMBOL_LIST = trend_reversion_etf.LONG_SYMBOLS + \
                        trend_reversion_etf.SHORT_SYMBOLS + \
                        dividend_portfolio_management.dividend_symbols
 
-TZ_NY = ZoneInfo("US/Eastern")
-TZ_UTC = ZoneInfo('UTC')
+TZ_NY = TIMEZONE.NY  # Migrated from common_constants
+TZ_UTC = TIMEZONE.UTC  # Migrated from common_constants
 
-MAX_STOP_RATE = 0.06
+# 設定値は config.py から取得
+MAX_STOP_RATE = trading_config.MAX_STOP_RATE
 
 test_mode = False
 test_datetime = ""
@@ -60,27 +63,23 @@ api = alpaca_client.api  # 後方互換性のため
 def get_upcoming_earnings():
     tickers = []
 
-    retries = 0
-    while retries < FINVIZ_MAX_RETRIES:
-        resp = requests.get(FINVIZ_SCREEN_EARNINGS)
+    # FinvizClientを使用してスクリーナーURLを構築
+    screener_url = finviz_client.build_screener_url(
+        filters=EARNINGS_FILTERS,
+        columns=EARNINGS_COLUMNS,
+        order='-relativevolume'
+    )
+    
+    # スクリーナーデータを取得
+    df = finviz_client.get_screener_data(screener_url)
+    
+    if df is not None and len(df) > 0:
+        for ticker in df['Ticker']:
+            tickers.append(ticker)
+    else:
+        logger.error("Failed to get upcoming earnings data from Finviz.")
 
-        if resp.status_code == 200:
-            df = pd.read_csv(io.BytesIO(resp.content), sep=",")
-            for ticker in df['Ticker']:
-                tickers.append(ticker)
-            break
-
-        elif resp.status_code == 429:
-            retries += 1
-            wait_time = FINVIZ_RETRY_WAIT * (2 ** (retries - 1))
-            print(f"Rate limit exceeded. Retrying in {wait_time} seconds...")
-            time.sleep(wait_time)
-
-        else:
-            print(f"Error fetching data from Finviz. Status code: {resp.status_code}")
-            break
-
-    print('Tickers upcoming earnings', tickers)
+    logger.info(f'Tickers upcoming earnings: {tickers}')
 
     return tickers
 
@@ -92,7 +91,7 @@ def get_latest_close(symbol):
         bars = api.get_bars(symbol, TimeFrame(1, TimeFrameUnit.Minute),
                             start=test_datetime.date(), end=test_datetime.date()).df
 
-        start_time = pd.Timestamp(test_datetime) - timedelta(minutes=5)
+        start_time = pd.Timestamp(test_datetime) - timedelta(minutes=timing_config.DATA_LOOKBACK_MINUTES)
         end_time = pd.Timestamp(test_datetime)
 
         bars = bars.between_time(start_time.astimezone(TZ_UTC).time(), end_time.astimezone(TZ_UTC).time())
@@ -106,7 +105,7 @@ def get_latest_close(symbol):
     return close
 
 
-def is_closing_time_range(range_minutes=1):
+def is_closing_time_range(range_minutes=timing_config.DEFAULT_MINUTES_TO_CLOSE):
     if test_mode:
         # close_dt = pd.Timestamp(str(test_datetime.date()) + " " + str(close_time), tz=TZ_NY)
         # close_dt -= timedelta(minutes=2)
@@ -168,7 +167,7 @@ def is_below_ema(symbol, period_ema):
     else:
         current_dt = pd.Timestamp(datetime.datetime.now().astimezone(TZ_NY))
 
-    start_dt = current_dt - timedelta(days=period_ema * 10)
+    start_dt = current_dt - timedelta(days=period_ema * trading_config.EMA_LOOKBACK_MULTIPLIER)
 
     start_date = start_dt.strftime("%Y-%m-%d")
     end_date = current_dt.strftime("%Y-%m-%d")
@@ -203,7 +202,7 @@ def crossed_below_ema_within_n_days(symbol, period_ema, days=2, threshold=0.02):
         current_dt = pd.Timestamp(datetime.datetime.now().astimezone(TZ_NY))
 
     # 過去n日分のデータを取得するため、EMA計算に十分なデータを含めて取得
-    start_dt = current_dt - timedelta(days=period_ema * 10)
+    start_dt = current_dt - timedelta(days=period_ema * trading_config.EMA_LOOKBACK_MULTIPLIER)
     end_date = current_dt.strftime("%Y-%m-%d")
     start_date = start_dt.strftime("%Y-%m-%d")
 
@@ -249,7 +248,7 @@ def get_ema(symbol, period_ema):
     else:
         current_dt = pd.Timestamp(datetime.datetime.now().astimezone(TZ_NY))
 
-    start_dt = current_dt - timedelta(days=period_ema * 10)
+    start_dt = current_dt - timedelta(days=period_ema * trading_config.EMA_LOOKBACK_MULTIPLIER)
 
     start_date = start_dt.strftime("%Y-%m-%d")
     end_date = current_dt.strftime("%Y-%m-%d")
@@ -266,7 +265,7 @@ def get_ema(symbol, period_ema):
     return ema
 
 
-def close_position(symbol, qty, retries=3, delay=0.5):
+def close_position(symbol, qty, retries=retry_config.ORDER_MAX_RETRIES, delay=retry_config.ORDER_RETRY_DELAY):
     try:
         pos = api.get_position(symbol)
         if pos is None:
@@ -348,12 +347,12 @@ def update_stop_order(symbol, cancel_order=True):
         return
 
     if pos is not None:
-        ema = round(get_ema(symbol, 21), 2)
+        ema = round(get_ema(symbol, trading_config.EMA_PERIOD_SHORT), 2)
         latest_close = get_latest_close(symbol)
         avg_entry_price = round(float(pos.avg_entry_price), 2)
 
         if direction == 'long':
-            if avg_entry_price * (1 + MAX_STOP_RATE * 2) < latest_close:
+            if avg_entry_price * (1 + trading_config.MAX_STOP_RATE * 2) < latest_close:
                 
                 if avg_entry_price < ema < latest_close:
                     print("new stop is ema after securing +12% profit.")
@@ -363,10 +362,10 @@ def update_stop_order(symbol, cancel_order=True):
                     print("ema is below entry price. keeping average entry price as stop.")
                     new_stop = avg_entry_price
             else:
-                print("new stop is MAX_STOP_RATE.", MAX_STOP_RATE)
-                new_stop = round(avg_entry_price * (1 - MAX_STOP_RATE), 2)
+                print("new stop is MAX_STOP_RATE.", trading_config.MAX_STOP_RATE)
+                new_stop = round(avg_entry_price * (1 - trading_config.MAX_STOP_RATE), 2)
         else:  # short position
-            if avg_entry_price * (1 - MAX_STOP_RATE * 2) > latest_close:
+            if avg_entry_price * (1 - trading_config.MAX_STOP_RATE * 2) > latest_close:
                 
                 if latest_close < ema < avg_entry_price:
                     print("new stop is ema after securing +12% profit.")
@@ -375,8 +374,8 @@ def update_stop_order(symbol, cancel_order=True):
                     print("ema is above entry price. keeping average entry price as stop.")
                     new_stop = avg_entry_price
             else:
-                print("new stop is MAX_STOP_RATE.", MAX_STOP_RATE)
-                new_stop = round(avg_entry_price * (1 + MAX_STOP_RATE), 2)
+                print("new stop is MAX_STOP_RATE.", trading_config.MAX_STOP_RATE)
+                new_stop = round(avg_entry_price * (1 + trading_config.MAX_STOP_RATE), 2)
 
         print(symbol, "updated stop order", new_stop, "qty", pos.qty)
 
@@ -433,9 +432,9 @@ def sleep_until_next_close(time_to_minutes=1):
                     if next_close_dt > current_dt + timedelta(minutes=time_to_minutes):
                         print("time to next close", next_close_dt - current_dt)
                         if test_mode:
-                            time.sleep(0.01)
+                            time.sleep(timing_config.TEST_MODE_SLEEP)
                         else:
-                            time.sleep(60)
+                            time.sleep(timing_config.PRODUCTION_SLEEP_MINUTE)
                     else:
                         print(current_dt, "close time reached.")
                         break
@@ -449,6 +448,66 @@ def sleep_until_next_close(time_to_minutes=1):
 
             if test_mode:
                 test_datetime += timedelta(minutes=time_to_minutes)
+
+
+def close_positions_before_earnings():
+    """決算前のポジションをクローズする"""
+    logger.info("Checking positions with upcoming earnings.")
+    tickers = get_upcoming_earnings()
+    
+    if len(tickers) == 0:
+        logger.info("No positions with upcoming earnings found.")
+        return
+    
+    positions = get_existing_positions()
+    for pos in positions:
+        if pos.symbol in EXCLUDED_SYMBOL_LIST:
+            logger.info(f"{pos.symbol} is on excluded symbol list. skipped.")
+            continue
+        
+        if pos.symbol in tickers:
+            logger.info(f"Closing position before upcoming earnings: {pos.symbol}")
+            close_position(pos.symbol, float(pos.qty))
+
+
+def update_all_stop_orders():
+    """全ポジションのストップオーダーを更新する"""
+    positions = get_existing_positions()
+    for pos in positions:
+        if pos.symbol in EXCLUDED_SYMBOL_LIST:
+            logger.info(f"{pos.symbol} is on excluded symbol list. skipped.")
+            continue
+        else:
+            logger.info(f"Updating stop order for {pos.symbol}")
+            update_stop_order(pos.symbol)
+
+
+def verify_stop_orders():
+    """全ポジションにストップオーダーが設定されているか確認する"""
+    positions = get_existing_positions()
+    for pos in positions:
+        if pos.symbol in EXCLUDED_SYMBOL_LIST:
+            logger.info(f"{pos.symbol} is on excluded symbol list. skipped.")
+            continue
+        else:
+            orders = api.list_orders(symbols=[pos.symbol])
+            if len(orders) == 0:
+                logger.warning(f"{pos.symbol} does not have stop order. Resubmitting stop order.")
+                update_stop_order(pos.symbol, cancel_order=False)
+            else:
+                logger.info(f"{pos.symbol} stop order confirmed.")
+
+
+def execute_position_maintenance():
+    """ポジションメンテナンスのメイン処理を実行"""
+    # 決算前のポジションをクローズ
+    close_positions_before_earnings()
+    
+    # ストップオーダーを更新
+    update_all_stop_orders()
+    
+    # ストップオーダーの存在を確認
+    verify_stop_orders()
 
 
 def maintain_swing_position():
@@ -469,100 +528,23 @@ def maintain_swing_position():
     else:
         cal = api.get_calendar(start=str(datetime.date.today()), end=str(datetime.date.today()))
         if len(cal) <= 0:
-            print("market will not open today. exit process.")
+            logger.warning("market will not open today. exit process.")
             return
 
     # テストモードの場合は1回だけ実行
     if test_mode:
         if is_closing_time_range(range_minutes=close_time_range):
-            # Close positions with upcoming earnings
-            print("Checking positions with upcoming earnings.")
-            tickers = get_upcoming_earnings()
-            if len(tickers) > 0:
-                positions = get_existing_positions()
-                for pos in positions:
-                    if pos.symbol in EXCLUDED_SYMBOL_LIST:
-                        print(pos.symbol, "is on excluded symbol list. skipped.")
-                        continue
-
-                    if pos.symbol in tickers:
-                        print(datetime.datetime.now().astimezone(TZ_NY),
-                              "closing position before upcoming earnings", pos.symbol)
-                        close_position(pos.symbol, float(pos.qty))
-
-            positions = get_existing_positions()
-            for pos in positions:
-                if pos.symbol in EXCLUDED_SYMBOL_LIST:
-                    print(pos.symbol, "is on excluded symbol list. skipped.")
-                    continue
-                else:
-                    print(datetime.datetime.now().astimezone(TZ_NY), pos.symbol,
-                          "updating stop order.")
-                    update_stop_order(pos.symbol)
-
-            # double check if stop orders are placed
-            positions = get_existing_positions()
-            for pos in positions:
-                if pos.symbol in EXCLUDED_SYMBOL_LIST:
-                    print(pos.symbol, "is on excluded symbol list. skipped.")
-                    continue
-                else:
-                    orders = api.list_orders(symbols=[pos.symbol])
-                    if len(orders) == 0:
-                        print(datetime.datetime.now().astimezone(TZ_NY), pos.symbol,
-                              "does not have stop order. Resubmitting stop order.")
-                        update_stop_order(pos.symbol, cancel_order=False)
-                    else:
-                        print(datetime.datetime.now().astimezone(TZ_NY), pos.symbol,
-                              "stop order confirmed.")
+            execute_position_maintenance()
     else:
+        # 本番モード：市場クローズ時間まで待って実行
         while True:
             sleep_until_next_close(time_to_minutes=close_time_range)
-
+            
             if is_closing_time_range(range_minutes=close_time_range):
-                # Close positions with upcoming earnings
-                print("Checking positions with upcoming earnings.")
-                tickers = get_upcoming_earnings()
-                if len(tickers) > 0:
-                    positions = get_existing_positions()
-                    for pos in positions:
-                        if pos.symbol in EXCLUDED_SYMBOL_LIST:
-                            print(pos.symbol, "is on excluded symbol list. skipped.")
-                            continue
-
-                        if pos.symbol in tickers:
-                            print(datetime.datetime.now().astimezone(TZ_NY),
-                                  "closing position before upcoming earnings", pos.symbol)
-                            close_position(pos.symbol, float(pos.qty))
-
-                positions = get_existing_positions()
-                for pos in positions:
-                    if pos.symbol in EXCLUDED_SYMBOL_LIST:
-                        print(pos.symbol, "is on excluded symbol list. skipped.")
-                        continue
-                    else:
-                        print(datetime.datetime.now().astimezone(TZ_NY), pos.symbol,
-                              "updating stop order.")
-                        update_stop_order(pos.symbol)
-
-                # double check if stop orders are placed
-                positions = get_existing_positions()
-                for pos in positions:
-                    if pos.symbol in EXCLUDED_SYMBOL_LIST:
-                        print(pos.symbol, "is on excluded symbol list. skipped.")
-                        continue
-                    else:
-                        orders = api.list_orders(symbols=[pos.symbol])
-                        if len(orders) == 0:
-                            print(datetime.datetime.now().astimezone(TZ_NY), pos.symbol,
-                                  "does not have stop order. Resubmitting stop order.")
-                            update_stop_order(pos.symbol, cancel_order=False)
-                        else:
-                            print(datetime.datetime.now().astimezone(TZ_NY), pos.symbol,
-                                  "stop order confirmed.")
+                execute_position_maintenance()
                 break
-
-            time.sleep(10)
+            
+            time.sleep(timing_config.PRODUCTION_SLEEP_MEDIUM)
 
 
 if __name__ == '__main__':
