@@ -279,7 +279,7 @@ class FMPDataFetcher:
     
     def get_earnings_surprises(self, symbol: str, limit: int = 80) -> Optional[List[Dict]]:
         """
-        特定銘柄の決算サプライズデータを取得
+        特定銘柄の決算サプライズデータを取得（複数エンドポイント対応）
         
         Args:
             symbol: 銘柄シンボル
@@ -290,18 +290,38 @@ class FMPDataFetcher:
         """
         logger.info(f"Fetching earnings surprises for {symbol}")
         
+        # エンドポイント1: earnings-surprises (stable API)
         endpoint = f'earnings-surprises/{symbol}'
         params = {'limit': limit}
         
         data = self._make_request(endpoint, params)
         
+        if not data:
+            # エンドポイント2: historical/earning_calendar (v3 API)
+            logger.debug(f"earnings-surprises failed for {symbol}, trying historical/earning_calendar")
+            original_base = self.base_url
+            self.base_url = self.alt_base_url
+            endpoint = f'historical/earning_calendar/{symbol}'
+            data = self._make_request(endpoint, params)
+            self.base_url = original_base
+                
         if data:
             # データの形式を確認してリストに統一
             if isinstance(data, dict):
                 data = [data]
             
-            logger.info(f"Retrieved {len(data)} earnings surprise records for {symbol}")
-            return data
+            # データ形式を earnings-surprises 互換に統一
+            standardized_data = []
+            for item in data:
+                standardized_item = {
+                    'date': item.get('date'),
+                    'actualEarningResult': item.get('actualEarningResult') or item.get('eps') or item.get('epsActual'),
+                    'estimatedEarning': item.get('estimatedEarning') or item.get('epsEstimated') or item.get('epsEstimate')
+                }
+                standardized_data.append(standardized_item)
+            
+            logger.info(f"Retrieved {len(standardized_data)} earnings records for {symbol}")
+            return standardized_data
         else:
             logger.warning(f"No earnings surprise data found for {symbol}")
             return None
