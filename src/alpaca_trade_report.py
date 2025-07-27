@@ -25,10 +25,11 @@ ALPACA_API_KEY = os.getenv('ALPACA_API_KEY')
 ALPACA_SECRET_KEY = os.getenv('ALPACA_SECRET_KEY')
 ALPACA_API_URL = os.getenv('ALPACA_API_URL', 'https://paper-api.alpaca.markets')
 
+# Require Alpaca keys for core functionality, but continue if missing to allow offline testing
 if not ALPACA_API_KEY or not ALPACA_SECRET_KEY:
-    raise ValueError("ALPACA_API_KEY or ALPACA_SECRET_KEY is not set")
-if not FMP_API_KEY:
-    raise ValueError("FMP_API_KEY is not set")
+    print("Warning: Alpaca API keys not configured. Some live-account features may be disabled.")
+
+# FMP key is optional – data-enrichment steps will be skipped without it
 
 class TradeReport:
     # Dark mode color settings
@@ -64,7 +65,15 @@ class TradeReport:
         self.initial_capital = initial_capital  # Set as initial value
         self.risk_limit = risk_limit
         self.partial_profit = partial_profit
-        self.fmp_client = FMPDataFetcher()
+        # Initialize FMP client (optional)
+        try:
+            self.fmp_client = FMPDataFetcher()
+            if getattr(self.fmp_client, 'disabled', False):
+                from fmp_data_fetcher import NullFMPDataFetcher
+                self.fmp_client = NullFMPDataFetcher()
+        except Exception:
+            from fmp_data_fetcher import NullFMPDataFetcher
+            self.fmp_client = NullFMPDataFetcher()
         self.language = language
         self.pre_earnings_change = pre_earnings_change
         
@@ -91,8 +100,12 @@ class TradeReport:
         return api_key
 
     def get_earnings_data(self):
-        """Get earnings data from FMP and convert to EODHD format"""
-        print(f"\n1. Starting earnings data retrieval ({self.start_date} to {self.end_date})")
+        """FMPから決算データを取得してEODHD形式に変換"""
+        # Skip if FMP client disabled
+        if self.fmp_client is None or self.fmp_client.__class__.__name__ == "NullFMPDataFetcher":
+            print("FMP API not configured – skipping earnings data retrieval.")
+            return {"earnings": []}
+        print(f"\n1. 決算データの取得を開始 ({self.start_date} から {self.end_date})")
         
         try:
             # Get earnings calendar using FMP client

@@ -11,21 +11,22 @@ A comprehensive trading performance analysis tool that generates detailed report
 - **Multi-language Support**: Available in English and Japanese
 - **CSV Export**: Detailed trade-by-trade data in CSV format
 - **Risk Management Analysis**: Tracks stop-loss effectiveness and position sizing
+- **Graceful Degradation**: Runs with basic functionality when optional APIs are unavailable
 
 ## Prerequisites
 
 - Python 3.11 or higher
-- macOS/Linux (Windows users may need WSL)
+- macOS/Linux/Windows
 
 ## Installation
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/yourusername/alpaca-trade-report.git
+git clone https://github.com/tradermonty/alpaca-trade-report.git
 cd alpaca-trade-report
 ```
 
-2. (No additional system dependencies required)
+2. No additional system dependencies required
 
 3. Create and activate a virtual environment:
 ```bash
@@ -45,11 +46,14 @@ cp .env.sample .env
 
 Edit `.env` and add your API keys:
 ```
+# Required
 ALPACA_API_KEY=your-alpaca-api-key
 ALPACA_SECRET_KEY=your-alpaca-secret-key
 ALPACA_API_URL=https://api.alpaca.markets  # or https://paper-api.alpaca.markets for paper trading
-FMP_API_KEY=your-fmp-api-key
-OPENAI_API_KEY=your-openai-api-key  # Optional
+
+# Optional (for enhanced features)
+# FMP_API_KEY=your-fmp-api-key
+# OPENAI_API_KEY=your-openai-api-key
 ```
 
 ## Usage
@@ -76,35 +80,38 @@ python src/alpaca_trade_report.py
 
 The tool generates two types of reports:
 
-1. **CSV Report**: `trade_report_YYYY-MM-DD_to_YYYY-MM-DD.csv`
+1. **CSV Report**: `reports/alpaca_trade_report_YYYY-MM-DD_YYYY-MM-DD.csv`
    - Detailed trade-by-trade analysis
    - Entry/exit prices and dates
    - Profit/loss calculations
-   - Earnings information
+   - Earnings information (if FMP API available)
 
-2. **HTML Report**: `portfolio_report_YYYY-MM-DD_to_YYYY-MM-DD.html`
+2. **HTML Report**: `reports/portfolio_report_YYYY-MM-DD_to_YYYY-MM-DD.html`
    - Interactive dashboard with dark theme
    - Performance charts (equity curve, drawdown, monthly returns)
    - Sortable tables with all trades
    - Key performance metrics summary
+   - Enhanced analysis features (with optional APIs)
 
 ## API Requirements
 
-### Alpaca API
+### Alpaca API (Required)
 - Sign up at [Alpaca](https://alpaca.markets/)
 - Both live and paper trading accounts are supported
 - Free tier is sufficient for personal use
 
-### Financial Modeling Prep API
+### Financial Modeling Prep API (Optional)
 - Sign up at [Financial Modeling Prep](https://financialmodelingprep.com/)
 - Used for earnings calendar and company profile data
+- The tool runs in degraded mode without this API (basic trade analysis only)
 - Free tier: 250 calls/day
 - Starter: 300 calls/minute
 - Premium: 750 calls/minute
 
 ### OpenAI API (Optional)
-- Used for AI-powered trade analysis
+- Used for AI-powered trade analysis features
 - Sign up at [OpenAI](https://platform.openai.com/)
+- Not required for basic functionality
 
 ## Performance Metrics
 
@@ -137,6 +144,8 @@ pytest
 pytest -v  # Verbose output
 ```
 
+Note: Test suite is currently minimal and should be expanded.
+
 ### API Rate Limits
 - The tool implements automatic rate limiting for FMP API
 - If you hit rate limits, the tool will automatically slow down requests
@@ -146,6 +155,18 @@ pytest -v  # Verbose output
 For large date ranges with many trades:
 - Process data in smaller chunks
 - Increase Python's memory limit if needed
+
+## Troubleshooting
+
+### Missing API Keys
+- **FMP API Key Missing**: The tool will run in degraded mode, skipping earnings-related analysis
+- **OpenAI API Key Missing**: AI-powered features will be disabled, but core functionality remains
+- **Alpaca API Key Missing**: The tool cannot function without valid Alpaca credentials
+
+### Common Issues
+- **401 Unauthorized**: Check your API keys are correct and active
+- **Rate Limiting**: Tool automatically handles FMP rate limits with exponential backoff
+- **Empty Reports**: Ensure your date range contains actual trades in your Alpaca account
 
 ## Contributing
 
