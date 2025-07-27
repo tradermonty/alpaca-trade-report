@@ -30,7 +30,11 @@ class FMPDataFetcher:
         """
         self.api_key = api_key or os.getenv('FMP_API_KEY')
         if not self.api_key:
-            raise ValueError("FMP API key is required. Set FMP_API_KEY environment variable.")
+            # Allow creation without API key – enter degraded mode
+            logging.warning("FMP_API_KEY not found – running in degraded mode; data-dependent features will be skipped.")
+            self.disabled = True
+        else:
+            self.disabled = False
         
         self.base_url = "https://financialmodelingprep.com/stable"
         self.alt_base_url = "https://financialmodelingprep.com/api/v3"
@@ -103,13 +107,13 @@ class FMPDataFetcher:
         self.last_request_time = now
 
     # ------------------------------------------------------------------
-    # シンボルユーティリティ
+    # Symbol utilities
     # ------------------------------------------------------------------
     def _symbol_variants(self, symbol: str) -> List[str]:
-        """FMP API が `BRK-B` のようなダッシュ表記を要求するケースに備え
-        シンボルのバリエーションを返す。
+        """Return symbol variations for cases where FMP API requires
+        dash notation like `BRK-B`.
 
-        例: ``BRK.B`` → ["BRK.B", "BRK-B"]
+        Example: ``BRK.B`` → ["BRK.B", "BRK-B"]
         ``AAPL`` → ["AAPL"]
         """
         if '.' in symbol:
@@ -117,7 +121,7 @@ class FMPDataFetcher:
         return [symbol]
     
     def _activate_rate_limiting(self, duration_minutes: int = 5):
-        """429エラー発生時にレート制限を有効化"""
+        """Activate rate limiting when 429 error occurs"""
         self.rate_limiting_active = True
         self.max_performance_mode = False
         self.rate_limit_cooldown_until = datetime.now() + timedelta(minutes=duration_minutes)
@@ -125,15 +129,15 @@ class FMPDataFetcher:
     
     def _make_request(self, endpoint: str, params: Dict = None, max_retries: int = 3) -> Optional[Dict]:
         """
-        FMP APIへのリクエスト実行（リトライと指数バックオフ付き）
+        Execute FMP API request with retry and exponential backoff
         
         Args:
-            endpoint: APIエンドポイント
-            params: リクエストパラメータ
-            max_retries: 最大リトライ回数
+            endpoint: API endpoint
+            params: Request parameters
+            max_retries: Maximum retry count
         
         Returns:
-            APIレスポンス
+            API response
         """
         if params is None:
             params = {}
@@ -141,8 +145,13 @@ class FMPDataFetcher:
         params['apikey'] = self.api_key
         url = f"{self.base_url}/{endpoint}"
         
+        # If client is disabled (e.g., invalid key) immediately return None
+        if getattr(self, 'disabled', False):
+            logger.debug("FMPDataFetcher disabled – skipping request")
+            return None
+
         for attempt in range(max_retries + 1):
-            # レート制限チェック（軽微または429エラー後の厳格制限）
+            # Rate limit check (minimal or strict limit after 429 error)
             self._rate_limit_check()
             
             try:
@@ -155,14 +164,19 @@ class FMPDataFetcher:
                 elif response.status_code == 403:
                     logger.warning(f"Access forbidden (403) for {endpoint} - check API plan limits")
                     return None
+                elif response.status_code == 401:
+                    # Invalid or expired API key – disable further calls
+                    logger.error("FMP API responded 401 Unauthorized. Disabling FMPDataFetcher.")
+                    self.disabled = True
+                    return None
                 elif response.status_code == 429:
-                    # 429エラー発生時：動的レート制限を有効化
+                    # When 429 error occurs: activate dynamic rate limiting
                     self._activate_rate_limiting(duration_minutes=5)
                     
                     if attempt < max_retries:
-                        # 指数バックオフ: 2^attempt * 5秒 + ランダムジッター
+                        # Exponential backoff: 2^attempt * 5 seconds + random jitter
                         base_delay = 5 * (2 ** attempt)
-                        jitter = base_delay * 0.1 * (0.5 - time.time() % 1)  # ±10%のジッター
+                        jitter = base_delay * 0.1 * (0.5 - time.time() % 1)  # ±10% jitter
                         delay = base_delay + jitter
                         
                         logger.warning(f"Rate limit exceeded (429) for {endpoint}. "
@@ -195,7 +209,7 @@ class FMPDataFetcher:
                 
             except requests.exceptions.RequestException as e:
                 if attempt < max_retries:
-                    delay = 2 ** attempt  # 指数バックオフ
+                    delay = 2 ** attempt  # Exponential backoff
                     logger.warning(f"Request failed for {endpoint}: {e}. Retrying in {delay}s...")
                     time.sleep(delay)
                     continue
@@ -210,15 +224,15 @@ class FMPDataFetcher:
     
     def _get_earnings_for_specific_symbols(self, symbols: List[str], from_date: str, to_date: str) -> List[Dict]:
         """
-        特定銘柄の決算データを効率的に取得
+        Efficiently retrieve earnings data for specific symbols
         
         Args:
-            symbols: 銘柄リスト
-            from_date: 開始日
-            to_date: 終了日
+            symbols: List of symbols
+            from_date: Start date
+            to_date: End date
         
         Returns:
-            決算データリスト
+            List of earnings data
         """
         all_earnings = []
         
@@ -228,14 +242,14 @@ class FMPDataFetcher:
             data = None
 
             for sym in self._symbol_variants(symbol):
-                # まず earnings-surprises エンドポイントを試す
+                # First try earnings-surprises endpoint
                 endpoint = f'earnings-surprises/{sym}'
                 params = {'limit': 80}
 
                 data = self._make_request(endpoint, params)
 
                 if not data:
-                    # フォールバック1: historical/earning_calendar
+                    # Fallback 1: historical/earning_calendar
                     logger.debug(f"earnings-surprises failed for {sym}, trying historical/earning_calendar")
                     original_base = self.base_url
                     self.base_url = self.alt_base_url
@@ -244,7 +258,7 @@ class FMPDataFetcher:
                     self.base_url = original_base
 
                 if not data:
-                    # フォールバック2: v3 earnings API
+                    # Fallback 2: v3 earnings API
                     logger.debug(f"historical/earning_calendar failed for {sym}, trying v3 earnings API")
                     original_base = self.base_url
                     self.base_url = self.alt_base_url
@@ -253,19 +267,19 @@ class FMPDataFetcher:
                     self.base_url = original_base
 
                 if data:
-                    break  # 成功したバリエーションがあれば抜ける
+                    break  # Exit if a successful variation is found
             
             if not data:
-                # 最終フォールバック: キャッシュされた決算カレンダーを使用
+                # Final fallback: use cached earnings calendar
                 logger.warning(f"No direct earnings data found for {symbol}, will use bulk calendar as fallback")
 
-            # ----------------- 取得データの整形 -----------------
+            # ----------------- Format retrieved data -----------------
             if data:
-                # dataがリストでない場合の処理
+                # Handle case where data is not a list
                 if isinstance(data, dict):
                     data = [data]
 
-                # 日付範囲でフィルタリング
+                # Filter by date range
                 filtered_data = []
                 start_dt = datetime.strptime(from_date, '%Y-%m-%d')
                 end_dt = datetime.strptime(to_date, '%Y-%m-%d')
@@ -275,7 +289,7 @@ class FMPDataFetcher:
                         try:
                             item_date = datetime.strptime(item['date'], '%Y-%m-%d')
                             if start_dt <= item_date <= end_dt:
-                                # earnings-calendar 形式に変換
+                                # Convert to earnings-calendar format
                                 earnings_item = {
                                     'date': item['date'],
                                     'symbol': symbol,
@@ -298,14 +312,14 @@ class FMPDataFetcher:
     
     def get_earnings_surprises(self, symbol: str, limit: int = 80) -> Optional[List[Dict]]:
         """
-        特定銘柄の決算サプライズデータを取得（複数エンドポイント対応）
+        Retrieve earnings surprise data for specific symbol (multiple endpoint support)
         
         Args:
-            symbol: 銘柄シンボル
-            limit: 取得件数上限（デフォルト: 80件、約20年分）
+            symbol: Stock symbol
+            limit: Maximum number of records (default: 80 records, about 20 years)
         
         Returns:
-            決算サプライズデータのリスト、またはNone
+            List of earnings surprise data, or None
         """
         logger.info(f"Fetching earnings surprises for {symbol}")
         
@@ -313,14 +327,14 @@ class FMPDataFetcher:
 
         data = None
 
-        # シンボルバリエーションを順に試行
+        # Try symbol variations in sequence
         for sym in self._symbol_variants(symbol):
-            # エンドポイント1: earnings-surprises (stable API)
+            # Endpoint 1: earnings-surprises (stable API)
             endpoint = f'earnings-surprises/{sym}'
             data = self._make_request(endpoint, params)
 
             if not data:
-                # エンドポイント2: historical/earning_calendar (v3 API)
+                # Endpoint 2: historical/earning_calendar (v3 API)
                 logger.debug(f"earnings-surprises failed for {sym}, trying historical/earning_calendar")
                 original_base = self.base_url
                 self.base_url = self.alt_base_url
@@ -329,14 +343,14 @@ class FMPDataFetcher:
                 self.base_url = original_base
             
             if data:
-                break  # いずれかのバリエーションで成功したら抜ける
+                break  # Exit if successful with any variation
                 
         if data:
-            # データの形式を確認してリストに統一
+            # Check data format and standardize to list
             if isinstance(data, dict):
                 data = [data]
             
-            # データ形式を earnings-surprises 互換に統一
+            # Standardize data format to earnings-surprises compatible
             standardized_data = []
             for item in data:
                 standardized_item = {
@@ -354,64 +368,64 @@ class FMPDataFetcher:
     
     def get_earnings_calendar(self, from_date: str, to_date: str, target_symbols: List[str] = None, us_only: bool = True) -> List[Dict]:
         """
-        決算カレンダーをBulk取得 (Premium+ plan required)
-        90日を超える期間は自動的に分割
+        Bulk retrieve earnings calendar (Premium+ plan required)
+        Automatically splits periods longer than 90 days
         
         Args:
-            from_date: 開始日 (YYYY-MM-DD)
-            to_date: 終了日 (YYYY-MM-DD)
-            target_symbols: 対象銘柄リスト（省略時は全銘柄）
-            us_only: アメリカ市場のみに限定するか（デフォルト: True）
+            from_date: Start date (YYYY-MM-DD)
+            to_date: End date (YYYY-MM-DD)
+            target_symbols: Target symbol list (all symbols if omitted)
+            us_only: Limit to US market only (default: True)
         
         Returns:
-            決算データリスト
+            List of earnings data
         """
-        # 特定銘柄のみの場合は、個別銘柄APIを使用（効率的）
+        # For specific symbols only, use individual symbol API (efficient)
         if target_symbols and len(target_symbols) <= 10:
             logger.info(f"Using individual symbol API for {len(target_symbols)} symbols")
             specific_earnings = self._get_earnings_for_specific_symbols(target_symbols, from_date, to_date)
             
-            # 個別APIで取得できなかった銘柄を確認
+            # Check symbols that couldn't be retrieved via individual API
             found_symbols = set(item['symbol'] for item in specific_earnings)
             missing_symbols = set(target_symbols) - found_symbols
             
             if missing_symbols:
                 logger.info(f"Could not find earnings data for {missing_symbols} via individual API")
-                # フォールバック処理は行わず、取得できたデータのみ返す
+                # No fallback processing, return only retrieved data
                 return specific_earnings
             else:
-                # すべての銘柄のデータが取得できた場合は返す
+                # Return if data for all symbols was retrieved
                 return specific_earnings
         
         logger.info(f"Fetching earnings calendar from {from_date} to {to_date}")
         
-        # 日付をdatetimeオブジェクトに変換
+        # Convert dates to datetime objects
         start_dt = datetime.strptime(from_date, '%Y-%m-%d')
         end_dt = datetime.strptime(to_date, '%Y-%m-%d')
         
-        # FMP Premium planの制限チェック（2020年8月以前はデータなし）
+        # FMP Premium plan limitation check (no data before August 2020)
         fmp_limit_date = datetime(2020, 8, 1)
         if start_dt < fmp_limit_date:
             error_msg = (
                 f"\n{'='*60}\n"
-                f"FMP データソース制限エラー\n"
+                f"FMP Data Source Limitation Error\n"
                 f"{'='*60}\n"
-                f"開始日: {from_date}\n"
-                f"FMP Premium plan制限: 2020年8月1日以降のデータのみ利用可能\n\n"
-                f"解決策:\n"
-                f"1. 開始日を2020-08-01以降に変更\n"
+                f"Start date: {from_date}\n"
+                f"FMP Premium plan limitation: Only data from August 1, 2020 onwards is available\n\n"
+                f"Solutions:\n"
+                f"1. Change start date to 2020-08-01 or later\n"
                 f"{'='*60}"
             )
             logger.error(error_msg)
             raise ValueError(f"FMP Premium plan does not support data before 2020-08-01. Requested start date: {from_date}")
         
-        # 開始日が制限日以降でも、一部が制限範囲に入る場合の警告
+        # Warning for cases where start date is after limit but partially in restricted range
         if start_dt < datetime(2020, 9, 1):
             logger.warning(f"Warning: FMP data coverage may be limited for dates close to August 2020. "
                          f"For comprehensive historical analysis, consider using alternative data source.")
         
-        # 期間が90日を超える場合は分割
-        max_days = 30  # 30日ごとに分割（安全マージン）
+        # Split if period exceeds 90 days
+        max_days = 30  # Split every 30 days (safety margin)
         all_data = []
         
         current_start = start_dt
@@ -434,20 +448,20 @@ class FMPDataFetcher:
                 all_data.extend(chunk_data)
                 logger.info(f"Retrieved {len(chunk_data)} records for this chunk")
             
-            # 次の期間へ
+            # Move to next period
             current_start = current_end + timedelta(days=1)
             
-            # レート制限は_rate_limit_check()で動的に管理
-            # チャンク間の固定待機は削除し、最大スピードを確保
+            # Rate limiting is dynamically managed by _rate_limit_check()
+            # Remove fixed waiting between chunks to ensure maximum speed
         
         if len(all_data) == 0:
             logger.warning("earnings-calendar endpoint returned no data, trying alternative method")
             return self._get_earnings_calendar_alternative(from_date, to_date, target_symbols, us_only)
         
-        # 特定銘柄のみ要求されている場合はフィルタリング
+        # Filter if only specific symbols are requested
         if target_symbols:
             filtered_data = []
-            target_set = set(target_symbols)  # 高速検索のためセットに変換
+            target_set = set(target_symbols)  # Convert to set for fast lookup
             for item in all_data:
                 if item.get('symbol', '') in target_set:
                     filtered_data.append(item)
@@ -455,16 +469,16 @@ class FMPDataFetcher:
             logger.info(f"Filtered to {len(filtered_data)} records for target symbols: {target_symbols}")
             return filtered_data
         
-        # アメリカ市場のみにフィルタリング
+        # Filter to US market only
         if us_only:
             us_data = []
             for item in all_data:
                 symbol = item.get('symbol', '')
-                # US市場の銘柄を識別（通常はexchangeShortNameで判定）
+                # Identify US market symbols (usually determined by exchangeShortName)
                 exchange = item.get('exchangeShortName', '').upper()
                 if exchange in ['NASDAQ', 'NYSE', 'AMEX', 'NYSE AMERICAN']:
                     us_data.append(item)
-                # exchangeShortName情報がない場合は、通常のUS銘柄パターンで判定
+                # If exchangeShortName info is missing, determine by typical US symbol patterns
                 elif exchange == '' and symbol and not any(x in symbol for x in ['.TO', '.L', '.PA', '.AX', '.DE', '.HK']):
                     us_data.append(item)
             
@@ -477,17 +491,17 @@ class FMPDataFetcher:
     def _get_earnings_calendar_alternative(self, from_date: str, to_date: str, 
                                            target_symbols: List[str] = None, us_only: bool = True) -> List[Dict]:
         """
-        代替決算カレンダー取得
-        個別銘柄のearnings-surprises APIを使用
+        Alternative earnings calendar retrieval
+        Use individual symbol earnings-surprises API
         
         Args:
-            from_date: 開始日
-            to_date: 終了日
-            target_symbols: 対象銘柄リスト（Noneの場合はデフォルトリスト使用）
+            from_date: Start date
+            to_date: End date
+            target_symbols: Target symbol list (use default list if None)
         """
         logger.info("Using alternative earnings data collection method")
         
-        # Premiumプラン対応：拡張銘柄リスト（主要S&P 500銘柄）
+        # Premium plan support: Extended symbol list (major S&P 500 symbols)
         major_symbols = [
             # Technology
             'AAPL', 'MSFT', 'GOOGL', 'GOOG', 'AMZN', 'META', 'TSLA', 'NVDA', 'ORCL', 
@@ -574,12 +588,12 @@ class FMPDataFetcher:
                 logger.warning(f"Failed to get earnings for {symbol}: {e}")
                 continue
         
-        # アメリカ市場のみにフィルタリング（代替メソッド用）
+        # Filter to US market only (for alternative method)
         if us_only:
             us_earnings = []
             for earning in earnings_data:
                 symbol = earning.get('symbol', '')
-                # アメリカ市場の銘柄（S&P銘柄等）のみを対象
+                # Target only US market symbols (S&P symbols, etc.)
                 if symbol and not any(x in symbol for x in ['.TO', '.L', '.PA', '.AX', '.DE', '.HK']):
                     us_earnings.append(earning)
             earnings_data = us_earnings
@@ -595,26 +609,26 @@ class FMPDataFetcher:
     
     def get_company_profile(self, symbol: str) -> Optional[Dict]:
         """
-        企業プロファイル取得
+        Retrieve company profile
         
         Args:
-            symbol: 銘柄コード
+            symbol: Stock symbol
         
         Returns:
-            企業情報
+            Company information
         """
         logger.debug(f"Fetching company profile for {symbol}")
         
         data = None
         for sym in self._symbol_variants(symbol):
-            # v3 エンドポイント (推奨)
+            # v3 endpoint (recommended)
             original_base = self.base_url
             self.base_url = self.alt_base_url
             endpoint = f'profile/{sym}'
             data = self._make_request(endpoint)
             self.base_url = original_base
 
-            # stable エンドポイントをフォールバックとして試行
+            # Try stable endpoint as fallback
             if not data:
                 endpoint = f'profile/{sym}'
                 data = self._make_request(endpoint)
@@ -631,13 +645,13 @@ class FMPDataFetcher:
     
     def process_earnings_data(self, earnings_data: List[Dict]) -> pd.DataFrame:
         """
-        FMP決算データを標準形式に変換
+        Convert FMP earnings data to standard format
         
         Args:
-            earnings_data: FMP決算データ
+            earnings_data: FMP earnings data
         
         Returns:
-            標準化されたDataFrame
+            Standardized DataFrame
         """
         if not earnings_data:
             return pd.DataFrame()
@@ -646,17 +660,17 @@ class FMPDataFetcher:
         
         for earning in earnings_data:
             try:
-                # FMPデータ構造に基づく処理
+                # Processing based on FMP data structure
                 processed_earning = {
                     'code': earning.get('symbol', '') + '.US',  # .US suffix for compatibility
                     'report_date': earning.get('date', ''),
-                    'date': earning.get('date', ''),  # 実際の決算日
+                    'date': earning.get('date', ''),  # Actual earnings date
                     'before_after_market': self._parse_timing(earning.get('time', '')),
-                    'currency': 'USD',  # FMPは主にUSDデータ
+                    'currency': 'USD',  # FMP is mainly USD data
                     'actual': self._safe_float(earning.get('epsActual')),
                     'estimate': self._safe_float(earning.get('epsEstimated')),  # FMP uses 'epsEstimated'
-                    'difference': 0,  # 後で計算
-                    'percent': 0,     # 後で計算
+                    'difference': 0,  # Calculate later
+                    'percent': 0,     # Calculate later
                     'revenue_actual': self._safe_float(earning.get('revenueActual')),
                     'revenue_estimate': self._safe_float(earning.get('revenueEstimate')),
                     'updated_from_date': earning.get('updatedFromDate', ''),
@@ -664,7 +678,7 @@ class FMPDataFetcher:
                     'data_source': 'FMP'
                 }
                 
-                # サプライズ率計算
+                # Calculate surprise rate
                 if processed_earning['actual'] is not None and processed_earning['estimate'] is not None:
                     if processed_earning['estimate'] != 0:
                         processed_earning['difference'] = processed_earning['actual'] - processed_earning['estimate']
@@ -679,7 +693,7 @@ class FMPDataFetcher:
         df = pd.DataFrame(processed_data)
         
         if not df.empty:
-            # 日付でソート
+            # Sort by date
             df = df.sort_values('report_date')
             logger.info(f"Processed {len(df)} earnings records")
         
@@ -687,10 +701,10 @@ class FMPDataFetcher:
     
     def _parse_timing(self, time_str: str) -> str:
         """
-        FMPの時間情報をBefore/AfterMarket形式に変換
+        Convert FMP time information to Before/AfterMarket format
         
         Args:
-            time_str: FMP時間文字列
+            time_str: FMP time string
         
         Returns:
             Before/AfterMarket
@@ -709,13 +723,13 @@ class FMPDataFetcher:
     
     def _safe_float(self, value: Any) -> Optional[float]:
         """
-        安全なfloat変換
+        Safe float conversion
         
         Args:
-            value: 変換対象値
+            value: Value to convert
         
         Returns:
-            float値またはNone
+            Float value or None
         """
         if value is None or value == '':
             return None
@@ -727,27 +741,26 @@ class FMPDataFetcher:
     
     def get_historical_price_data(self, symbol: str, from_date: str, to_date: str) -> Optional[List[Dict]]:
         """
-        FMPから株価履歴データを取得
+        Retrieve historical price data from FMP
 
-        FMP では Berkshire Hathaway のクラス B 株など、ティッカーシンボルに
-        `.` が含まれる場合（例: ``BF.B`` や ``BRK.B``）を ``-`` に置き換えた
-        表記 (``BF-B`` / ``BRK-B``) を使用します。そのため API リクエスト時に
-        自動で代替シンボルも試行し、意図しないフォーマットのレスポンスまたは
-        取得失敗をフォールバックします。
+        For FMP, symbols containing `.` such as Berkshire Hathaway Class B stocks
+        (e.g., ``BF.B`` or ``BRK.B``) use dash notation (``BF-B`` / ``BRK-B``).
+        Therefore, when making API requests, alternative symbols are automatically
+        tried to handle unexpected format responses or retrieval failures.
 
         Args:
-            symbol: 銘柄コード（例: "AAPL", "BRK.B"）
-            from_date: 開始日 (YYYY-MM-DD)
-            to_date: 終了日 (YYYY-MM-DD)
+            symbol: Stock symbol (e.g., "AAPL", "BRK.B")
+            from_date: Start date (YYYY-MM-DD)
+            to_date: End date (YYYY-MM-DD)
 
         Returns:
-            株価データリスト  (取得できなかった場合は None)
+            Stock price data list (None if retrieval failed)
         """
 
-        # シンボルのバリエーションを用意
+        # Prepare symbol variations
         symbol_variants = [symbol]
         if '.' in symbol:
-            # FMP 用の代替表記 ( . -> - )
+            # Alternative notation for FMP ( . -> - )
             symbol_variants.append(symbol.replace('.', '-'))
 
         params = {
@@ -755,11 +768,11 @@ class FMPDataFetcher:
             'to': to_date
         }
 
-        # バリエーションごとに試行
+        # Try each variation
         for sym in symbol_variants:
             logger.debug(f"Fetching historical price data for {sym} from {from_date} to {to_date}")
 
-            # エンドポイントの組み合わせを都度生成
+            # Generate endpoint combinations on the fly
             endpoints_to_try = [
                 # Stable API endpoints
                 ('stable', f'historical-price-full/{sym}'),
@@ -781,7 +794,7 @@ class FMPDataFetcher:
                 original_base_url = self.base_url
                 self.base_url = base_url
 
-                # 最大パフォーマンスで実行
+                # Execute at maximum performance
                 data = self._make_request(endpoint, params, max_retries=3)
 
                 # Restore original base URL
@@ -793,7 +806,7 @@ class FMPDataFetcher:
                 else:
                     logger.debug(f"Endpoint failed: {api_version}/{endpoint}")
 
-            # データを正常に取得できた場合はフォーマットを確認し返却
+            # If data is successfully retrieved, check format and return
             if data is not None:
                 if isinstance(data, dict):
                     # Standard format with 'historical' field
@@ -802,25 +815,25 @@ class FMPDataFetcher:
                     # Alternative format with direct data
                     elif 'results' in data:
                         return data['results']
-                    # Chart format (単一辞書)
+                    # Chart format (single dictionary)
                     elif 'date' in data:
                         return [data]
                 elif isinstance(data, list):
                     return data
 
-                # 予期しないフォーマットだった場合はログを出し、次のバリエーションへ
+                # If unexpected format, log and move to next variation
                 logger.warning(f"Unexpected data format for {sym}: {type(data)}")
 
-        # すべてのバリエーション・エンドポイントで失敗
+        # Failed with all variations and endpoints
         logger.warning(f"Failed to fetch historical price data for any variant of {symbol}")
         return None
     
     def get_sp500_constituents(self) -> List[str]:
         """
-        S&P 500構成銘柄を取得
+        Retrieve S&P 500 constituent symbols
         
         Returns:
-            銘柄コードリスト
+            List of stock symbols
         """
         logger.debug("Fetching S&P 500 constituents")
         
@@ -843,29 +856,29 @@ class FMPDataFetcher:
     
     def get_mid_small_cap_symbols(self, min_market_cap: float = 1e9, max_market_cap: float = 50e9) -> List[str]:
         """
-        時価総額ベースで中小型株を取得
+        Retrieve mid/small cap stocks based on market capitalization
         
         Args:
-            min_market_cap: 最小時価総額（デフォルト: $1B）
-            max_market_cap: 最大時価総額（デフォルト: $50B）
+            min_market_cap: Minimum market cap (default: $1B)
+            max_market_cap: Maximum market cap (default: $50B)
         
         Returns:
-            中小型株の銘柄コードリスト
+            List of mid/small cap stock symbols
         """
         logger.info(f"Fetching mid/small cap stocks (${min_market_cap/1e9:.1f}B - ${max_market_cap/1e9:.1f}B)")
         
-        # FMPのstock screenerを使用
+        # Use FMP stock screener
         params = {
             'marketCapMoreThan': int(min_market_cap),
             'marketCapLowerThan': int(max_market_cap),
-            'limit': 3000  # 大きめの制限を設定
+            'limit': 3000  # Set a large limit
         }
         
         # Try different endpoints
         endpoints_to_try = [
-            'stock_screener',  # 正しいエンドポイント名
-            'screener',        # 代替エンドポイント 
-            'stock-screener'   # 元のエンドポイント
+            'stock_screener',  # Correct endpoint name
+            'screener',        # Alternative endpoint 
+            'stock-screener'   # Original endpoint
         ]
         
         data = None
@@ -880,7 +893,7 @@ class FMPDataFetcher:
             # Fallback: Use market cap filtering in earnings data processing
             return self._get_mid_small_cap_fallback(min_market_cap, max_market_cap)
         
-        # US市場の銘柄のみを抽出
+        # Extract only US market symbols
         us_symbols = []
         if isinstance(data, list):
             for stock in data:
@@ -888,23 +901,23 @@ class FMPDataFetcher:
                 exchange = stock.get('exchangeShortName', '')
                 country = stock.get('country', '')
                 
-                # US市場の銘柄のみを選択
+                # Select only US market symbols
                 if (exchange in ['NASDAQ', 'NYSE', 'AMEX'] or country == 'US') and symbol:
-                    # 一般的でない銘柄タイプを除外
+                    # Exclude uncommon symbol types
                     if not any(x in symbol for x in ['.', '-', '^', '=']):
                         us_symbols.append(symbol)
         
         logger.info(f"Retrieved {len(us_symbols)} mid/small cap US stocks")
-        return us_symbols[:2000]  # 実用的な数に制限
+        return us_symbols[:2000]  # Limit to practical number
     
     def _get_mid_small_cap_fallback(self, min_market_cap: float, max_market_cap: float) -> List[str]:
         """
-        Stock screenerが利用できない場合の代替手段
-        人気のある中小型株リストを使用
+        Alternative method when stock screener is not available
+        Use popular mid/small cap stock list
         """
         logger.info("Using curated mid/small cap stock list as fallback")
         
-        # 中小型株として人気の銘柄リスト（時価総額範囲に適合するもの）
+        # Popular mid/small cap stock list (matching market cap range)
         mid_small_cap_stocks = [
             # Regional Banks (typically $2-20B market cap)
             'OZK', 'ZION', 'PNFP', 'FHN', 'SNV', 'FULT', 'CBSH', 'ONB', 'IBKR',
@@ -931,10 +944,10 @@ class FMPDataFetcher:
     
     def get_api_usage_stats(self) -> Dict:
         """
-        API使用統計を取得
+        Retrieve API usage statistics
         
         Returns:
-            使用統計情報
+            Usage statistics information
         """
         now = datetime.now()
         recent_calls_minute = [
@@ -957,5 +970,27 @@ class FMPDataFetcher:
             'base_url': self.base_url,
             'min_request_interval': self.min_request_interval
         }
+
+
+# ------------------------------------------------------------------
+# Graceful fallback when no API key is available
+# ------------------------------------------------------------------
+
+
+class NullFMPDataFetcher:
+    """Stub fetcher used when no FMP API key is configured.
+
+    All methods mirror :class:`FMPDataFetcher` but return empty data / None so that
+    the rest of the application can continue to run while skipping FMP-dependent
+    analyses.
+    """
+
+    def __getattr__(self, item):
+        # Any method returns a stub that logs and returns None/[]
+        def _stub(*args, **kwargs):
+            logger.debug(f"NullFMPDataFetcher: called {item} – returning empty result")
+            return [] if item.startswith("get_") else None
+
+        return _stub
 
 
