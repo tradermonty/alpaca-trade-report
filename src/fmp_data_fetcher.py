@@ -101,6 +101,20 @@ class FMPDataFetcher:
             self.call_timestamps.append(now)
         
         self.last_request_time = now
+
+    # ------------------------------------------------------------------
+    # シンボルユーティリティ
+    # ------------------------------------------------------------------
+    def _symbol_variants(self, symbol: str) -> List[str]:
+        """FMP API が `BRK-B` のようなダッシュ表記を要求するケースに備え
+        シンボルのバリエーションを返す。
+
+        例: ``BRK.B`` → ["BRK.B", "BRK-B"]
+        ``AAPL`` → ["AAPL"]
+        """
+        if '.' in symbol:
+            return [symbol, symbol.replace('.', '-')]
+        return [symbol]
     
     def _activate_rate_limiting(self, duration_minutes: int = 5):
         """429エラー発生時にレート制限を有効化"""
@@ -210,44 +224,52 @@ class FMPDataFetcher:
         
         for symbol in symbols:
             logger.info(f"Fetching earnings for {symbol}")
-            
-            # まず earnings-surprises エンドポイントを試す
-            endpoint = f'earnings-surprises/{symbol}'
-            params = {'limit': 80}  # 四半期ごとなので80件で約20年分
-            
-            data = self._make_request(endpoint, params)
-            
-            if not data:
-                # フォールバック1: historical/earning_calendar を試す（正しいエンドポイント）
-                logger.debug(f"earnings-surprises failed for {symbol}, trying historical/earning_calendar")
-                # v3 APIを使用
-                original_base = self.base_url
-                self.base_url = self.alt_base_url
-                endpoint = f'historical/earning_calendar/{symbol}'
-                data = self._make_request(endpoint, params)
-                self.base_url = original_base
-            
-            if not data:
-                # フォールバック2: v3 earnings APIを試す
-                logger.debug(f"historical/earning_calendar failed for {symbol}, trying v3 earnings API")
-                # base_urlを一時的にv3に変更
-                original_base = self.base_url
-                self.base_url = self.alt_base_url
-                endpoint = f'earnings/{symbol}'
+
+            data = None
+
+            for sym in self._symbol_variants(symbol):
+                # まず earnings-surprises エンドポイントを試す
+                endpoint = f'earnings-surprises/{sym}'
                 params = {'limit': 80}
+
                 data = self._make_request(endpoint, params)
-                self.base_url = original_base
+
+                if not data:
+                    # フォールバック1: historical/earning_calendar
+                    logger.debug(f"earnings-surprises failed for {sym}, trying historical/earning_calendar")
+                    original_base = self.base_url
+                    self.base_url = self.alt_base_url
+                    endpoint = f'historical/earning_calendar/{sym}'
+                    data = self._make_request(endpoint, params)
+                    self.base_url = original_base
+
+                if not data:
+                    # フォールバック2: v3 earnings API
+                    logger.debug(f"historical/earning_calendar failed for {sym}, trying v3 earnings API")
+                    original_base = self.base_url
+                    self.base_url = self.alt_base_url
+                    endpoint = f'earnings/{sym}'
+                    data = self._make_request(endpoint, params)
+                    self.base_url = original_base
+
+                if data:
+                    break  # 成功したバリエーションがあれば抜ける
             
+            if not data:
+                # 最終フォールバック: キャッシュされた決算カレンダーを使用
+                logger.warning(f"No direct earnings data found for {symbol}, will use bulk calendar as fallback")
+
+            # ----------------- 取得データの整形 -----------------
             if data:
                 # dataがリストでない場合の処理
                 if isinstance(data, dict):
                     data = [data]
-                
+
                 # 日付範囲でフィルタリング
                 filtered_data = []
                 start_dt = datetime.strptime(from_date, '%Y-%m-%d')
                 end_dt = datetime.strptime(to_date, '%Y-%m-%d')
-                
+
                 for item in data:
                     if 'date' in item:
                         try:
@@ -268,12 +290,9 @@ class FMPDataFetcher:
                                 filtered_data.append(earnings_item)
                         except ValueError as e:
                             logger.debug(f"Date parsing error for {symbol}: {e}")
-                
+
                 logger.info(f"Found {len(filtered_data)} earnings records for {symbol} in date range")
                 all_earnings.extend(filtered_data)
-            else:
-                # 最終フォールバック: キャッシュされた決算カレンダーを使用
-                logger.warning(f"No direct earnings data found for {symbol}, will use bulk calendar as fallback")
         
         return all_earnings
     
@@ -290,20 +309,27 @@ class FMPDataFetcher:
         """
         logger.info(f"Fetching earnings surprises for {symbol}")
         
-        # エンドポイント1: earnings-surprises (stable API)
-        endpoint = f'earnings-surprises/{symbol}'
         params = {'limit': limit}
-        
-        data = self._make_request(endpoint, params)
-        
-        if not data:
-            # エンドポイント2: historical/earning_calendar (v3 API)
-            logger.debug(f"earnings-surprises failed for {symbol}, trying historical/earning_calendar")
-            original_base = self.base_url
-            self.base_url = self.alt_base_url
-            endpoint = f'historical/earning_calendar/{symbol}'
+
+        data = None
+
+        # シンボルバリエーションを順に試行
+        for sym in self._symbol_variants(symbol):
+            # エンドポイント1: earnings-surprises (stable API)
+            endpoint = f'earnings-surprises/{sym}'
             data = self._make_request(endpoint, params)
-            self.base_url = original_base
+
+            if not data:
+                # エンドポイント2: historical/earning_calendar (v3 API)
+                logger.debug(f"earnings-surprises failed for {sym}, trying historical/earning_calendar")
+                original_base = self.base_url
+                self.base_url = self.alt_base_url
+                endpoint = f'historical/earning_calendar/{sym}'
+                data = self._make_request(endpoint, params)
+                self.base_url = original_base
+            
+            if data:
+                break  # いずれかのバリエーションで成功したら抜ける
                 
         if data:
             # データの形式を確認してリストに統一
@@ -579,31 +605,23 @@ class FMPDataFetcher:
         """
         logger.debug(f"Fetching company profile for {symbol}")
         
-        # Try different endpoints - profile data is only available on v3 API
-        endpoints_to_try = [
-            ('v3', f'profile/{symbol}'),      # v3 endpoint (correct one)
-            ('stable', f'profile/{symbol}'),  # stable endpoint (backup)
-        ]
-        
         data = None
-        for api_version, endpoint in endpoints_to_try:
-            base_url = self.base_url if api_version == 'stable' else self.alt_base_url
-            logger.debug(f"Trying {api_version} endpoint for profile: {endpoint}")
-            
-            # Temporarily override base URL for this request
-            original_base_url = self.base_url
-            self.base_url = base_url
-            
+        for sym in self._symbol_variants(symbol):
+            # v3 エンドポイント (推奨)
+            original_base = self.base_url
+            self.base_url = self.alt_base_url
+            endpoint = f'profile/{sym}'
             data = self._make_request(endpoint)
-            
-            # Restore original base URL
-            self.base_url = original_base_url
-            
-            if data is not None:
-                logger.debug(f"Successfully fetched profile using: {api_version}/{endpoint}")
+            self.base_url = original_base
+
+            # stable エンドポイントをフォールバックとして試行
+            if not data:
+                endpoint = f'profile/{sym}'
+                data = self._make_request(endpoint)
+
+            if data:
+                logger.debug(f"Successfully fetched profile for {sym}")
                 break
-            else:
-                logger.debug(f"Profile endpoint failed: {api_version}/{endpoint}")
         
         if data and isinstance(data, list) and len(data) > 0:
             return data[0]
@@ -710,79 +728,91 @@ class FMPDataFetcher:
     def get_historical_price_data(self, symbol: str, from_date: str, to_date: str) -> Optional[List[Dict]]:
         """
         FMPから株価履歴データを取得
-        
+
+        FMP では Berkshire Hathaway のクラス B 株など、ティッカーシンボルに
+        `.` が含まれる場合（例: ``BF.B`` や ``BRK.B``）を ``-`` に置き換えた
+        表記 (``BF-B`` / ``BRK-B``) を使用します。そのため API リクエスト時に
+        自動で代替シンボルも試行し、意図しないフォーマットのレスポンスまたは
+        取得失敗をフォールバックします。
+
         Args:
-            symbol: 銘柄コード（例: "AAPL"）
+            symbol: 銘柄コード（例: "AAPL", "BRK.B"）
             from_date: 開始日 (YYYY-MM-DD)
             to_date: 終了日 (YYYY-MM-DD)
-        
+
         Returns:
-            株価データリスト
+            株価データリスト  (取得できなかった場合は None)
         """
-        logger.debug(f"Fetching historical price data for {symbol} from {from_date} to {to_date}")
-        
-        # Try different endpoint formats and base URLs for FMP
-        endpoints_to_try = [
-            # Stable API endpoints
-            ('stable', f'historical-price-full/{symbol}'),
-            ('stable', f'historical-chart/1day/{symbol}'),
-            ('stable', f'historical/{symbol}'),
-            # API v3 endpoints
-            ('v3', f'historical-price-full/{symbol}'),
-            ('v3', f'historical-chart/1day/{symbol}'),
-            ('v3', f'historical-daily-prices/{symbol}'),
-        ]
-        
+
+        # シンボルのバリエーションを用意
+        symbol_variants = [symbol]
+        if '.' in symbol:
+            # FMP 用の代替表記 ( . -> - )
+            symbol_variants.append(symbol.replace('.', '-'))
+
         params = {
             'from': from_date,
             'to': to_date
         }
-        
-        data = None
-        successful_endpoint = None
-        
-        for api_version, endpoint in endpoints_to_try:
-            base_url = self.base_url if api_version == 'stable' else self.alt_base_url
-            logger.debug(f"Trying {api_version} endpoint: {endpoint}")
-            
-            # Temporarily override base URL for this request
-            original_base_url = self.base_url
-            self.base_url = base_url
-            
-            # 最大パフォーマンスで実行
-            data = self._make_request(endpoint, params, max_retries=3)
-            
-            # Restore original base URL
-            self.base_url = original_base_url
-            
+
+        # バリエーションごとに試行
+        for sym in symbol_variants:
+            logger.debug(f"Fetching historical price data for {sym} from {from_date} to {to_date}")
+
+            # エンドポイントの組み合わせを都度生成
+            endpoints_to_try = [
+                # Stable API endpoints
+                ('stable', f'historical-price-full/{sym}'),
+                ('stable', f'historical-chart/1day/{sym}'),
+                ('stable', f'historical/{sym}'),
+                # API v3 endpoints
+                ('v3', f'historical-price-full/{sym}'),
+                ('v3', f'historical-chart/1day/{sym}'),
+                ('v3', f'historical-daily-prices/{sym}'),
+            ]
+
+            data = None
+
+            for api_version, endpoint in endpoints_to_try:
+                base_url = self.base_url if api_version == 'stable' else self.alt_base_url
+                logger.debug(f"Trying {api_version} endpoint: {endpoint}")
+
+                # Temporarily override base URL for this request
+                original_base_url = self.base_url
+                self.base_url = base_url
+
+                # 最大パフォーマンスで実行
+                data = self._make_request(endpoint, params, max_retries=3)
+
+                # Restore original base URL
+                self.base_url = original_base_url
+
+                if data is not None:
+                    logger.debug(f"Successfully fetched data using: {api_version}/{endpoint}")
+                    break  # stop trying endpoints
+                else:
+                    logger.debug(f"Endpoint failed: {api_version}/{endpoint}")
+
+            # データを正常に取得できた場合はフォーマットを確認し返却
             if data is not None:
-                successful_endpoint = f"{api_version}/{endpoint}"
-                logger.debug(f"Successfully fetched data using: {successful_endpoint}")
-                break
-            else:
-                logger.debug(f"Endpoint failed: {api_version}/{endpoint}")
-                # エンドポイント間の固定待機を削除（動的制限で管理）
-        
-        if data is None:
-            logger.warning(f"Failed to fetch historical price data for {symbol} using all available endpoints")
-            return None
-        
-        # Handle different response formats
-        if isinstance(data, dict):
-            # Standard format with 'historical' field
-            if 'historical' in data:
-                return data['historical']
-            # Alternative format with direct data
-            elif 'results' in data:
-                return data['results']
-            # Chart format
-            elif isinstance(data, dict) and 'date' in str(data):
-                return [data]
-        elif isinstance(data, list):
-            # Direct list format
-            return data
-        
-        logger.warning(f"Unexpected data format for {symbol}: {type(data)}")
+                if isinstance(data, dict):
+                    # Standard format with 'historical' field
+                    if 'historical' in data:
+                        return data['historical']
+                    # Alternative format with direct data
+                    elif 'results' in data:
+                        return data['results']
+                    # Chart format (単一辞書)
+                    elif 'date' in data:
+                        return [data]
+                elif isinstance(data, list):
+                    return data
+
+                # 予期しないフォーマットだった場合はログを出し、次のバリエーションへ
+                logger.warning(f"Unexpected data format for {sym}: {type(data)}")
+
+        # すべてのバリエーション・エンドポイントで失敗
+        logger.warning(f"Failed to fetch historical price data for any variant of {symbol}")
         return None
     
     def get_sp500_constituents(self) -> List[str]:

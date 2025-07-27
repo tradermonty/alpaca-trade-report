@@ -921,6 +921,14 @@ class TradeReport:
             'pareto_ratio': {
                 'ja': 'パレート比率',
                 'en': 'Pareto Ratio'
+            },
+            'period': {
+                'ja': '期間',
+                'en': 'Period'
+            },
+            'performance_metrics': {
+                'ja': 'パフォーマンス指標',
+                'en': 'Performance Metrics'
             }
         }
         return texts[key][self.language]
@@ -1224,11 +1232,11 @@ class TradeReport:
             <div class="container">
                 <div class="header">
                     <h1>{self.get_text('trade_report')}</h1>
-                    <p>期間: {self.start_date} ～ {self.end_date}</p>
+                    <p>{self.get_text('period')}: {self.start_date} – {self.end_date}</p>
                 </div>
                 
                 <div class="section">
-                    <h2>パフォーマンス指標</h2>
+                    <h2>{self.get_text('performance_metrics')}</h2>
                     <div class="metrics-grid">
                         {self._generate_metrics_html(df)}
                     </div>
