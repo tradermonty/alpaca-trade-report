@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Financial Modeling Prep API Data Fetcher
-高精度な決算データを提供するFMP APIクライアント
+High-precision earnings data provider using FMP API client
 """
 
 import os
@@ -13,20 +13,20 @@ import logging
 import time
 import json
 
-# ログ設定
+# Logging configuration
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
 class FMPDataFetcher:
-    """Financial Modeling Prep API クライアント"""
+    """Financial Modeling Prep API client"""
     
     def __init__(self, api_key: str = None):
         """
-        FMPDataFetcherの初期化
+        Initialize FMPDataFetcher
         
         Args:
-            api_key: FMP API キー
+            api_key: FMP API key
         """
         self.api_key = api_key or os.getenv('FMP_API_KEY')
         if not self.api_key:
@@ -36,67 +36,67 @@ class FMPDataFetcher:
         self.alt_base_url = "https://financialmodelingprep.com/api/v3"
         self.session = requests.Session()
         
-        # Maximum performance rate limiting - 750 calls/minフル活用
+        # Maximum performance rate limiting - 750 calls/min full utilization
         # Starter: 300 calls/min, Premium: 750 calls/min, Ultimate: 3000 calls/min  
-        self.rate_limiting_active = False  # 動的制御フラグ
-        self.calls_per_minute = 750  # Premium planの最大値（限界まで使用）
+        self.rate_limiting_active = False  # Dynamic control flag
+        self.calls_per_minute = 750  # Premium plan max value (use to limit)
         self.calls_per_second = 12.5  # 750/60 = 12.5 calls/sec
         self.call_timestamps = []
         self.last_request_time = datetime(1970, 1, 1)
-        self.min_request_interval = 0.08  # 1/12.5 = 0.08秒間隔（理論値）
-        self.rate_limit_cooldown_until = datetime(1970, 1, 1)  # 制限解除時刻
+        self.min_request_interval = 0.08  # 1/12.5 = 0.08 second interval (theoretical value)
+        self.rate_limit_cooldown_until = datetime(1970, 1, 1)  # Rate limit release time
         
-        # パフォーマンス最適化フラグ
-        self.max_performance_mode = True  # 429発生まで制限なし
+        # Performance optimization flag
+        self.max_performance_mode = True  # No limits until 429 error
         
         logger.info("FMP Data Fetcher initialized successfully")
     
     def _rate_limit_check(self):
-        """最大パフォーマンス制限チェック - 429発生まで制限を最小限に"""
+        """Maximum performance rate limit check - minimal limits until 429 error"""
         now = datetime.now()
         
-        # クールダウン期間後の制限解除チェック
+        # Check for rate limit deactivation after cooldown period
         if self.rate_limiting_active and now > self.rate_limit_cooldown_until:
             self.rate_limiting_active = False
             self.max_performance_mode = True
             logger.info("Rate limiting deactivated - returning to maximum performance")
         
-        # 429エラー発生時のみ厳格な制限を適用
+        # Apply strict limits only when 429 error occurs
         if self.rate_limiting_active:
             self.max_performance_mode = False
-            # 保守的な制限を適用
+            # Apply conservative limits
             time_since_last = (now - self.last_request_time).total_seconds()
-            if time_since_last < 0.2:  # 429発生時は0.2秒間隔
+            if time_since_last < 0.2:  # 0.2 second interval when 429 occurs
                 sleep_time = 0.2 - time_since_last
                 logger.warning(f"Conservative rate limiting: sleeping {sleep_time:.3f}s")
                 time.sleep(sleep_time)
                 now = datetime.now()
                 
-            # 1分以内のコール履歴をフィルター
+            # Filter call history within the last minute
             self.call_timestamps = [
                 ts for ts in self.call_timestamps 
                 if (now - ts).total_seconds() < 60
             ]
             
-            # 保守的な1分間制限（300 calls/min）
+            # Conservative per-minute limit (300 calls/min)
             if len(self.call_timestamps) >= 300:
                 sleep_time = 60 - (now - self.call_timestamps[0]).total_seconds() + 1
                 logger.warning(f"Conservative per-minute limit: sleeping {sleep_time:.1f}s")
                 time.sleep(sleep_time)
                 now = datetime.now()
         elif self.max_performance_mode:
-            # 最大パフォーマンスモード：429発生まで制限を完全に無効化
-            # ネットワーク遅延による自然なレート制限のみ
+            # Maximum performance mode: completely disable limits until 429 error
+            # Only natural rate limiting from network latency
             pass
         else:
-            # 通常モード：理論値まで使用
+            # Normal mode: use up to theoretical limit
             time_since_last = (now - self.last_request_time).total_seconds()
             if time_since_last < self.min_request_interval:
                 sleep_time = self.min_request_interval - time_since_last
                 time.sleep(sleep_time)
                 now = datetime.now()
         
-        # コール履歴の記録（429エラー時のみ）
+        # Record call history (only during 429 error)
         if self.rate_limiting_active:
             self.call_timestamps.append(now)
         

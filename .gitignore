@@ -40,11 +40,6 @@ ENV/
 data/
 .env
 *.log
-pnl_log.json
-
-# Google Sheets API credentials
-config/spreadsheetautomation-*.json
 
 # Reports directory (except index.html)
 reports/*
-!reports/index.html 

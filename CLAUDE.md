@@ -2,151 +2,128 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Project Overview
+
+This is an Alpaca Trade Report Generator that analyzes trading activity from Alpaca brokerage accounts and generates comprehensive performance reports with both CSV and interactive HTML outputs.
+
 ## Environment Setup
 
-This is a Python-based automated stock trading system. Use the `alpaca` virtual environment:
+1. Create `.env` file from `.env.sample`:
+   ```bash
+   cp .env.sample .env
+   ```
+
+2. Required API keys in `.env`:
+   - `ALPACA_API_KEY` - Alpaca trading API key
+   - `ALPACA_SECRET_KEY` - Alpaca secret key
+   - `FMP_API_KEY` - Financial Modeling Prep API key (for earnings data)
+   - `OPENAI_API_KEY` - Optional, for AI-powered analysis
+
+## Common Commands
+
+### Running the Application
 ```bash
-workon alpaca
+# Generate trade report for last 30 days (English)
+python src/alpaca_trade_report.py --start_date 2025-06-26 --end_date 2025-07-26 --language en
+
+# Generate report in Japanese
+python src/alpaca_trade_report.py --start_date 2025-06-26 --end_date 2025-07-26 --language ja
+
+# Full command with all parameters
+python src/alpaca_trade_report.py \
+    --start_date 2025-06-26 \
+    --end_date 2025-07-26 \
+    --language en \
+    --stop_loss 6 \
+    --trail_stop_ma 21 \
+    --max_holding_days 90 \
+    --initial_capital 10000 \
+    --risk_limit 6 \
+    --partial_profit \
+    --pre_earnings_change -10
 ```
 
-The system uses environment variables for API keys stored in `.env` file:
-- Multiple Alpaca accounts (live, paper, paper short)
-- Finviz Elite API key
-- OpenAI API key  
-- Alpha Vantage API key
-- FMP API key
+### Development Commands
+```bash
+# Format code
+black src/
 
-## Core Architecture
+# Sort imports
+isort src/
 
-### Trading Strategy Hierarchy
+# Lint code
+flake8 src/
 
-The system implements a multi-layered trading architecture:
+# Type checking
+mypy src/
 
-1. **Core Modules** (imported by multiple strategies):
-   - `strategy_allocation.py` - Calculates position sizes based on account equity and strategy allocation
-   - `risk_management.py` - PnL-based risk controls, maintains 30-day rolling performance in `pnl_log.json`
-   - `uptrend_stocks.py` - Identifies uptrending stocks using Finviz screeners, updates Google Sheets
-   - `dividend_portfolio_management.py` - Manages high-dividend stock exclusion list
-
-2. **Strategy Execution Scripts** (main entry points):
-   - `earnings_swing.py` - Earnings-based swing trading (calls `orb.py` via subprocess)
-   - `earnings_swing_short.py` - Short-side earnings plays (calls `orb_short.py` via subprocess)
-   - `relative_volume_trade.py` - Volume-based day trading (calls `orb.py` via subprocess)
-   - `maintain_swing.py/maintain_swing_paper.py` - Portfolio maintenance strategies
-
-3. **Trade Execution Engines** (called via subprocess):
-   - `orb.py` - Opening Range Breakout strategy with bracket orders
-   - `orb_short.py` - Short-side ORB implementation
-
-4. **Analysis Tools** (standalone utilities):
-   - `news_analysis.py` - News sentiment analysis using OpenAI
-   - `uptrend_count_sector.py` - Sector-based trend analysis
-   - `trend_reversion_*.py` - Mean reversion strategies
-
-### Account Management
-
-The system supports multiple trading modes via `ALPACA_ACCOUNT` variable:
-- `'live'` - Uses live Alpaca account credentials
-- `'paper'` - Uses paper trading credentials  
-- Account-specific API keys loaded from environment variables
-
-### Data Sources Integration
-
-- **Finviz Elite**: Stock screening with retry logic (`FINVIZ_MAX_RETRIES`, `FINVIZ_RETRY_WAIT`)
-- **Google Sheets**: Manual trade commands via `config/spreadsheetautomation-*.json`
-- **Alpaca API**: Market data, trade execution, account information
-- **Financial Modeling Prep (FMP)**: Market cap data, historical prices, index constituents
-
-## Key Execution Patterns
-
-### Subprocess Trading Pattern
-Main strategy scripts use subprocess to launch trading engines:
-```python
-process[ticker] = subprocess.Popen(['python3', TRADE_PY_FILE, str(ticker), '--swing', 'True', '--pos_size', str(size)])
+# Run tests (when implemented)
+pytest
+pytest -v  # Verbose
+pytest --asyncio-mode=auto  # For async tests
 ```
 
-### Risk Management Chain
-All strategies follow this sequence:
-1. Check PnL criteria via `risk_management.check_pnl_criteria()`
-2. Calculate position size via `strategy_allocation.get_target_value()`
-3. Execute trades only if risk criteria met
+## Architecture Overview
 
-### Google Sheets Integration
-Several scripts read/write to "US Market - Uptrend Stocks" and "trade_commands" sheets for:
-- Manual trade commands
-- Uptrend stock lists by sector
-- Performance tracking
+### Core Components
 
-## File Organization
+1. **Main Entry Point**: `src/alpaca_trade_report.py`
+   - `TradeReport` class orchestrates the entire report generation
+   - Handles command-line arguments and language settings
+   - Generates both CSV and HTML outputs
 
-```
-├── src/                   # Source code directory
-│   ├── api_clients.py    # Centralized API clients
-│   ├── *.py files        # Trading strategies and utilities
-├── config/               # Authentication files
-├── docs/                 # Strategy design documents
-├── reports/              # Generated reports (gitignored except index.html)
-└── pnl_log.json         # Risk management data
-```
+2. **API Integration**: `src/fmp_data_fetcher.py`
+   - `FMPDataFetcher` class manages Financial Modeling Prep API calls
+   - Implements rate limiting (750 calls/min for Premium plan)
+   - Handles symbol variants (e.g., BRK.B → BRK-B) automatically
+   - Provides earnings calendar and company profile data
 
-## Testing and Development
+### Key Design Patterns
 
-The system includes test modes in trading engines:
-```python
-test_mode = False  # Set to True for backtesting
-test_datetime = pd.Timestamp(datetime.now().astimezone(TZ_NY))
-```
+1. **Rate Limiting**
+   - Dynamic rate limiting that activates only when API returns 429
+   - Optimized for maximum throughput (12.5 calls/second)
+   - Automatic cooldown and retry mechanisms
 
-For development, always ensure:
-- `.env` file is properly configured with API keys
-- Google Sheets authentication file is in `config/` directory
-- Virtual environment `alpaca` is activated
-- Risk management checks are functioning before live trading
+2. **Data Processing Pipeline**
+   - Fetch trades from Alpaca API
+   - Enrich with earnings data from FMP
+   - Calculate performance metrics (Win rate, CAGR, Sharpe ratio)
+   - Generate visual reports with Plotly
 
-## API Client Architecture
+3. **Multi-language Support**
+   - Japanese and English language support
+   - Language-specific formatting for dates and numbers
+   - Internationalized labels in HTML reports
 
-The system now uses centralized API clients via `api_clients.py`:
+4. **Error Handling**
+   - Graceful fallbacks for API failures
+   - Symbol variant handling for special tickers
+   - Default values when data unavailable
 
-**AlpacaClient Usage:**
-```python
-from src.api_clients import get_alpaca_client
+### Output Formats
 
-# Get client for specific account type
-alpaca_client = get_alpaca_client('live')     # Live trading
-alpaca_client = get_alpaca_client('paper')    # Paper trading  
-alpaca_client = get_alpaca_client('paper_short')  # Short trading
+1. **CSV Report**: `trade_report_YYYY-MM-DD_to_YYYY-MM-DD.csv`
+   - Detailed trade-by-trade analysis
+   - Performance metrics per position
 
-# Access underlying API for backward compatibility
-api = alpaca_client.api
-```
+2. **HTML Report**: `portfolio_report_YYYY-MM-DD_to_YYYY-MM-DD.html`
+   - Interactive dark-themed dashboard
+   - Plotly charts for performance visualization
+   - Sortable tables with comprehensive metrics
 
-**FMPClient Usage:**
-```python  
-from src.api_clients import get_fmp_client
+## Testing
 
-fmp_client = get_fmp_client()
-market_data = fmp_client.get_market_cap_data(['AAPL', 'MSFT'])
-historical_data = fmp_client.get_historical_price_data('AAPL', '2024-01-01', '2024-12-31')
-```
+Currently, the project has minimal test coverage. When adding tests:
+- Use pytest framework
+- Place tests in `tests/` directory
+- Use `pytest-asyncio` for async code
+- Use `pytest-mock` for mocking external APIs
 
-**Benefits:**
-- Centralized error handling and retry logic
-- Singleton pattern prevents multiple connections
-- Built-in logging and monitoring
-- Type safety and documentation
+## Important Notes
 
-## Critical Dependencies
-
-- `alpaca_trade_api` - Trading API client (wrapped by AlpacaClient)
-- `gspread` + `oauth2client` - Google Sheets integration  
-- `python-dotenv` - Environment variable management
-- `pandas` - Data manipulation
-- `requests` - API calls to external services (wrapped by FMPClient)
-- `openai` - AI-powered news analysis
-
-## Trading Schedule
-
-The system is designed for US market hours with timezone handling via `ZoneInfo("US/Eastern")`. Many scripts include market calendar integration and automatic scheduling around:
-- Market open/close times
-- Pre-market and after-hours sessions
-- Holiday schedules via Alpaca calendar API
+- The application defaults to Alpaca paper trading API (`https://paper-api.alpaca.markets`)
+- FMP API has different rate limits based on plan (Starter: 300/min, Premium: 750/min)
+- All monetary values are in USD
+- Dates should be in YYYY-MM-DD format
+- The report generator handles both realized and unrealized gains/losses

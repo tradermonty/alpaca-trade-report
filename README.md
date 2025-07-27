@@ -1,183 +1,164 @@
-# 自動株式取引システム (Automated Stock Trading System)
+# Alpaca Trade Report Generator
 
-## 概要
+A comprehensive trading performance analysis tool that generates detailed reports from Alpaca brokerage accounts. This tool fetches trading data, enriches it with earnings information, and creates both CSV and interactive HTML reports with advanced performance metrics.
 
-このプロジェクトは、Alpaca Trading APIを使用した自動株式取引システムです。決算発表、テクニカル分析、ニュース分析などに基づく複数の取引戦略を実装しています。
+## Features
 
-**最新の改善**: システムのメンテナビリティ向上とコード品質改善のため、大規模なリファクタリングを実施しました。グローバル変数の削減、重複コードの統合、モジュール間の依存関係整理を行い、より安定した取引システムを実現しています。
+- **Automated Trade Analysis**: Fetches and analyzes all trades from your Alpaca account
+- **Earnings Integration**: Enriches trade data with earnings calendar information from Financial Modeling Prep API
+- **Performance Metrics**: Calculates Win Rate, CAGR, Sharpe Ratio, Maximum Drawdown, and more
+- **Interactive Reports**: Generates beautiful dark-themed HTML reports with Plotly charts
+- **Multi-language Support**: Available in English and Japanese
+- **CSV Export**: Detailed trade-by-trade data in CSV format
+- **Risk Management Analysis**: Tracks stop-loss effectiveness and position sizing
 
-## 主要機能
+## Prerequisites
 
-### 取引戦略
-- **決算スイング取引** (`earnings_swing.py`) - 決算発表後の価格変動を狙った取引
-- **決算ショート取引** (`earnings_swing_short.py`) - 決算後の下落を狙った空売り戦略  
-- **出来高ブレイクアウト** (`relative_volume_trade.py`) - 異常出来高での取引
-- **オープニングレンジブレイクアウト** (`orb.py`, `orb_refactored.py`) - 寄り付き後の価格ブレイクアウト戦略（リファクタリング版含む）
-- **トレンド反転戦略** (`trend_reversion_*.py`) - 平均回帰を狙った取引
+- Python 3.11 or higher
+- macOS/Linux (Windows users may need WSL)
 
-### 分析ツール
-- **ニュース分析** (`news_analysis.py`) - OpenAI APIを使用したニュース感情分析
-- **業界パフォーマンス分析** (`industry_performance.py`) - 業界別の株価パフォーマンス追跡
-- **セクター分析** (`uptrend_count_sector.py`) - セクター別のトレンド分析
+## Installation
 
-### リスク管理・システム管理
-- **PnL基準チェック** (`risk_management.py`) - 30日間の損益に基づくリスク制御
-- **戦略配分** (`strategy_allocation.py`) - 口座残高に基づく動的なポジションサイズ計算
-- **高配当銘柄管理** (`dividend_portfolio_management.py`) - 長期保有銘柄の除外リスト
-- **状態管理システム** (`orb_state_manager.py`) - グローバル変数を排除したクリーンな状態管理
-- **共通定数管理** (`common_constants.py`) - 重複コードを排除した一元的な定数管理
-- **取引インターフェース** (`trading_interfaces.py`) - モジュール間の循環依存を解決する抽象インターフェース
-
-## セットアップ
-
-### 1. 環境構築
+1. Clone the repository:
 ```bash
-# 仮想環境の作成・有効化
-mkvirtualenv alpaca
-workon alpaca
-
-# 必要なパッケージのインストール
-pip install alpaca-trade-api pandas requests gspread oauth2client python-dotenv openai yfinance pytest
+git clone https://github.com/yourusername/alpaca-trade-report.git
+cd alpaca-trade-report
 ```
 
-### 2. API キーの設定
-`.env`ファイルを作成し、以下のAPI キーを設定：
+2. (No additional system dependencies required)
 
-```env
-# Alpaca Trading API Keys
-ALPACA_API_KEY_LIVE=あなたのライブAPIキー
-ALPACA_SECRET_KEY_LIVE=あなたのライブシークレットキー
-ALPACA_API_KEY_PAPER=あなたのペーパーAPIキー  
-ALPACA_SECRET_KEY_PAPER=あなたのペーパーシークレットキー
-
-# External APIs
-FINVIZ_API_KEY=あなたのFinviz Eliteキー
-OPENAI_API_KEY=あなたのOpenAI APIキー
-ALPHA_VANTAGE_API_KEY=あなたのAlpha Vantageキー
-FMP_API_KEY=あなたのFMP APIキー
-
-# Google Services
-GOOGLE_SHEETS_CREDENTIALS_PATH=path/to/credentials.json
-GMAIL_APP_PASSWORD=あなたのGmailアプリパスワード
-```
-
-### 3. Google Sheets認証
-Google Sheets APIの認証ファイルを`config/`ディレクトリに配置してください。
-
-## 使用方法
-
-### 基本的な取引戦略の実行
+3. Create and activate a virtual environment:
 ```bash
-# 決算後スイング取引
-python src/earnings_swing.py
-
-# 出来高ブレイクアウト取引
-python src/relative_volume_trade.py
-
-# 手動でのORB取引（従来版）
-python src/orb.py AAPL --swing True --pos_size 1000
-
-# リファクタリング版ORB取引
-python -c "from orb_refactored import ORBRefactoredStrategy; strategy = ORBRefactoredStrategy(); strategy.start_trading('AAPL')"
+python3.11 -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
 ```
 
-### テスト実行
+4. Install Python dependencies:
 ```bash
-# 全体テストの実行
-pytest tests/
-
-# 特定のテストファイルのみ
-pytest tests/unit/test_basic_functionality.py
-
-# APIクライアントのテスト
-pytest tests/unit/test_api_clients.py
+pip install -r requirements.txt
 ```
 
-### 分析ツールの実行
+5. Set up environment variables:
 ```bash
-# ニュース感情分析
-python src/news_analysis.py TSLA
-
-# セクター分析
-python src/uptrend_count_sector.py
+cp .env.sample .env
 ```
 
-## プロジェクト構造
-
+Edit `.env` and add your API keys:
 ```
-├── src/                        # ソースコード
-│   ├── api_clients.py         # API共通クライアント（FMP, Alpaca, Finviz統合）
-│   ├── earnings_swing.py      # 決算スイング戦略
-│   ├── orb.py                 # ORB取引エンジン（従来版）
-│   ├── orb_refactored.py      # ORB取引エンジン（リファクタリング版）
-│   ├── orb_state_manager.py   # 状態管理システム
-│   ├── common_constants.py    # 共通定数管理
-│   ├── trading_interfaces.py  # 取引インターフェース
-│   ├── risk_management.py     # リスク管理
-│   ├── strategy_allocation.py # 戦略配分
-│   ├── news_analysis.py       # ニュース分析
-│   └── uptrend_stocks.py      # 上昇トレンド銘柄特定
-├── tests/                      # テストコード
-│   ├── unit/                  # ユニットテスト
-│   │   ├── test_basic_functionality.py
-│   │   ├── test_api_clients.py
-│   │   └── test_orb_refactored.py
-│   └── integration/           # 統合テスト
-├── config/                     # 認証ファイル
-│   └── spreadsheetautomation-*.json
-├── docs/                       # 設計ドキュメント
-│   ├── trading_strategies_documentation.md
-│   ├── api_integration_documentation.md
-│   ├── api_reference.md
-│   └── troubleshooting_guide.md
-├── reports/                    # 生成されるレポート
-└── pnl_log.json               # PnL履歴データ
+ALPACA_API_KEY=your-alpaca-api-key
+ALPACA_SECRET_KEY=your-alpaca-secret-key
+ALPACA_API_URL=https://api.alpaca.markets  # or https://paper-api.alpaca.markets for paper trading
+FMP_API_KEY=your-fmp-api-key
+OPENAI_API_KEY=your-openai-api-key  # Optional
 ```
 
-## リスク管理機能
+## Usage
 
-- **30日間PnL監視**: 過去30日間の損益が-6%を下回ると取引を停止
-- **動的ポジションサイズ**: 口座残高と戦略配分に基づく自動計算
-- **高配当銘柄除外**: 長期保有銘柄との重複を防止
-- **サーキットブレーカー**: API障害時の自動停止機能
-- **エラーハンドリング**: 指数バックオフ付きリトライロジック
-- **状態管理**: グローバル変数を排除したスレッドセーフな状態管理
+### Basic Usage
 
-## データソース
+Generate a report for the last 30 days:
+```bash
+python src/alpaca_trade_report.py --start_date 2024-12-26 --end_date 2025-01-26 --language en
+```
 
-- **Alpaca Markets**: 市場データ、取引実行
-- **Finviz Elite**: 株式スクリーニング
-- **Google Sheets**: 手動取引指示、データ管理
-- **OpenAI**: ニュース感情分析
-- **Alpha Vantage**: 追加市場データ
-- **Financial Modeling Prep (FMP)**: 時価総額データ、履歴株価（EODHDから移行済み）
+Generate a report for the default period (last 30 days):
+```bash
+python src/alpaca_trade_report.py
+```
 
-## システム改善履歴
+### Command-line Arguments
 
-### 2024年12月 - メンテナビリティ向上プロジェクト
-- **コードリファクタリング**: 476行の巨大関数を8つのクラスに分割
-- **グローバル変数削減**: 状態管理システムの導入
-- **重複コード排除**: 共通定数の一元管理
-- **循環依存解決**: 抽象インターフェースパターンの導入
-- **API移行**: EODHDからFMPへの完全移行
-- **テストカバレッジ向上**: 包括的なテストスイートの追加
-- **ドキュメント整備**: API仕様書、トラブルシューティングガイド等の追加
+- `--start_date`: Start date for analysis (YYYY-MM-DD) - defaults to 30 days ago
+- `--end_date`: End date for analysis (YYYY-MM-DD) - defaults to today
+- `--language`: Report language (`en` for English, `ja` for Japanese) - defaults to English
 
-## 注意事項
+## Output Files
 
-⚠️ **重要**: このシステムは自動的に実際の取引を行います。使用前に必ず：
+The tool generates two types of reports:
 
-1. ペーパートレーディングで十分にテストしてください
-2. リスク管理設定を確認してください  
-3. API制限と取引コストを理解してください
-4. 法的要件と規制を遵守してください
-5. テストを実行してシステムの健全性を確認してください (`pytest tests/`)
-6. 最新のドキュメント (`docs/`) を確認してシステムの動作を理解してください
+1. **CSV Report**: `trade_report_YYYY-MM-DD_to_YYYY-MM-DD.csv`
+   - Detailed trade-by-trade analysis
+   - Entry/exit prices and dates
+   - Profit/loss calculations
+   - Earnings information
 
-## ライセンス
+2. **HTML Report**: `portfolio_report_YYYY-MM-DD_to_YYYY-MM-DD.html`
+   - Interactive dashboard with dark theme
+   - Performance charts (equity curve, drawdown, monthly returns)
+   - Sortable tables with all trades
+   - Key performance metrics summary
 
-このプロジェクトは個人使用を目的としています。商用利用前には適切なライセンス確認を行ってください。
+## API Requirements
 
-## 免責事項
+### Alpaca API
+- Sign up at [Alpaca](https://alpaca.markets/)
+- Both live and paper trading accounts are supported
+- Free tier is sufficient for personal use
 
-このソフトウェアは投資アドバイスを提供するものではありません。取引には損失のリスクが伴います。使用者の責任でご利用ください。
+### Financial Modeling Prep API
+- Sign up at [Financial Modeling Prep](https://financialmodelingprep.com/)
+- Used for earnings calendar and company profile data
+- Free tier: 250 calls/day
+- Starter: 300 calls/minute
+- Premium: 750 calls/minute
+
+### OpenAI API (Optional)
+- Used for AI-powered trade analysis
+- Sign up at [OpenAI](https://platform.openai.com/)
+
+## Performance Metrics
+
+The tool calculates and displays:
+- **Total Return**: Overall portfolio performance
+- **CAGR**: Compound Annual Growth Rate
+- **Win Rate**: Percentage of profitable trades
+- **Sharpe Ratio**: Risk-adjusted returns
+- **Maximum Drawdown**: Largest peak-to-trough decline
+- **Average Win/Loss**: Mean profit on winning/losing trades
+- **Profit Factor**: Ratio of gross profits to gross losses
+
+## Development
+
+### Code Formatting
+```bash
+black src/
+isort src/
+```
+
+### Linting
+```bash
+flake8 src/
+mypy src/
+```
+
+### Testing
+```bash
+pytest
+pytest -v  # Verbose output
+```
+
+### API Rate Limits
+- The tool implements automatic rate limiting for FMP API
+- If you hit rate limits, the tool will automatically slow down requests
+- Consider upgrading your FMP plan for faster processing
+
+### Memory Issues
+For large date ranges with many trades:
+- Process data in smaller chunks
+- Increase Python's memory limit if needed
+
+## Contributing
+
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes (`git commit -m 'Add amazing feature'`)
+4. Push to the branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
+
+## License
+
+This project is licensed under the MIT License - see the LICENSE file for details.
+
+## Disclaimer
+
+This tool is for informational purposes only. It is not financial advice. Always do your own research and consider consulting with a financial advisor before making investment decisions.

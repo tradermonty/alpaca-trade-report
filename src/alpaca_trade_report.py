@@ -13,9 +13,12 @@ import plotly.graph_objs as go
 from plotly.offline import plot
 import webbrowser
 import alpaca_trade_api as tradeapi
+from openai import OpenAI
 from fmp_data_fetcher import FMPDataFetcher
+import markdown
+import re
 
-# 環境変数の読み込み
+# Load environment variables
 load_dotenv()
 FMP_API_KEY = os.getenv('FMP_API_KEY')
 ALPACA_API_KEY = os.getenv('ALPACA_API_KEY')
@@ -43,13 +46,13 @@ class TradeReport:
                  max_holding_days=90, initial_capital=10000, 
                  risk_limit=6, partial_profit=True, language='en', 
                  pre_earnings_change=-10):
-        """バックテストの初期化"""
-        # 日付の妥当性チェック
+        """Initialize backtest"""
+        # Check date validity
         current_date = datetime.now()
         end_date_dt = datetime.strptime(end_date, '%Y-%m-%d')
         
         if end_date_dt > current_date:
-            print(f"警告: 終了日({end_date})が未来の日付です。現在の日付を使用します。")
+            print(f"Warning: End date ({end_date}) is in the future. Using current date instead.")
             self.end_date = current_date.strftime('%Y-%m-%d')
         else:
             self.end_date = end_date
@@ -58,54 +61,54 @@ class TradeReport:
         self.stop_loss = stop_loss
         self.trail_stop_ma = trail_stop_ma
         self.max_holding_days = max_holding_days
-        self.initial_capital = initial_capital  # 初期値として設定
+        self.initial_capital = initial_capital  # Set as initial value
         self.risk_limit = risk_limit
         self.partial_profit = partial_profit
         self.fmp_client = FMPDataFetcher()
         self.language = language
         self.pre_earnings_change = pre_earnings_change
         
-        # トレード記録用
+        # For trade recording
         self.trades = []
         self.positions = []
         self.equity_curve = []
         
-        # 初期資本をAlpaca APIから取得（エラー時は初期値を使用）
+        # Get initial capital from Alpaca API (use initial value on error)
         try:
             self.initial_capital = self.get_account_equity_at_date(start_date)
-            print(f"初期資本: ${self.initial_capital:,.2f} ({start_date}時点)")
+            print(f"Initial capital: ${self.initial_capital:,.2f} (as of {start_date})")
         except Exception as e:
-            print(f"初期資本の取得に失敗しました: {str(e)}")
-            print(f"デフォルト値を使用します: ${self.initial_capital:,.2f}")
+            print(f"Failed to get initial capital: {str(e)}")
+            print(f"Using default value: ${self.initial_capital:,.2f}")
         
 
     def _load_api_key(self):
-        """FMPのAPIキーを読み込む"""
+        """Load FMP API key"""
         load_dotenv()
         api_key = os.getenv('FMP_API_KEY')
         if not api_key:
-            raise ValueError(".envファイルにFMP_API_KEYが設定されていません")
+            raise ValueError("FMP_API_KEY is not set in .env file")
         return api_key
 
     def get_earnings_data(self):
-        """FMPから決算データを取得してEODHD形式に変換"""
-        print(f"\n1. 決算データの取得を開始 ({self.start_date} から {self.end_date})")
+        """Get earnings data from FMP and convert to EODHD format"""
+        print(f"\n1. Starting earnings data retrieval ({self.start_date} to {self.end_date})")
         
         try:
-            # FMPクライアントを使用して決算カレンダーを取得
+            # Get earnings calendar using FMP client
             fmp_earnings_data = self.fmp_client.get_earnings_calendar(
                 from_date=self.start_date,
                 to_date=self.end_date,
                 us_only=True
             )
             
-            print(f"FMPから取得したデータ: {len(fmp_earnings_data)}件")
+            print(f"Data retrieved from FMP: {len(fmp_earnings_data)} records")
             
-            # FMPデータをEODHD形式に変換
+            # Convert FMP data to EODHD format
             converted_earnings = []
             for earning in fmp_earnings_data:
                 try:
-                    # サプライズ率の計算
+                    # Calculate surprise rate
                     eps_actual = earning.get('epsActual')
                     eps_estimate = earning.get('epsEstimate') or earning.get('epsEstimated')
                     
@@ -119,7 +122,7 @@ class TradeReport:
                         except (ValueError, TypeError):
                             continue
                     
-                    # EODHD形式に変換
+                    # Convert to EODHD format
                     converted_earning = {
                         'code': earning.get('symbol', '') + '.US',
                         'report_date': earning.get('date', ''),
@@ -139,20 +142,20 @@ class TradeReport:
                     converted_earnings.append(converted_earning)
                     
                 except Exception as e:
-                    print(f"変換エラー ({earning.get('symbol', 'Unknown')}): {str(e)}")
+                    print(f"Conversion error ({earning.get('symbol', 'Unknown')}): {str(e)}")
                     continue
             
-            print(f"変換後のデータ: {len(converted_earnings)}件")
+            print(f"Data after conversion: {len(converted_earnings)} records")
             
-            # EODHD形式に合わせて返す
+            # Return in EODHD format
             return {'earnings': converted_earnings}
             
         except Exception as e:
-            print(f"決算データの取得中にエラーが発生: {str(e)}")
+            print(f"Error occurred while retrieving earnings data: {str(e)}")
             raise
     
     def _convert_timing(self, fmp_timing):
-        """FMPのタイミング情報をEODHD形式に変換"""
+        """Convert FMP timing information to EODHD format"""
         if not fmp_timing:
             return None
         
@@ -166,13 +169,13 @@ class TradeReport:
 
     def get_historical_data(self, symbol: str, start_date: str, end_date: str) -> Optional[pd.DataFrame]:
         """
-        FMPのAPIを使用して指定された銘柄の株価データを取得
+        Get stock price data for specified symbol using FMP API
         """
         try:
-            print(f"株価データ取得開始: {symbol}")  # デバッグログ追加
-            print(f"期間: {start_date} から {end_date}")  # デバッグログ追加
+            print(f"Starting price data retrieval: {symbol}")  # Debug log
+            print(f"Period: {start_date} to {end_date}")  # Debug log
             
-            # FMPクライアントを使用して履歴データを取得
+            # Get historical data using FMP client
             price_data = self.fmp_client.get_historical_price_data(
                 symbol=symbol,
                 from_date=start_date,
@@ -180,21 +183,21 @@ class TradeReport:
             )
             
             if not price_data:
-                logging.warning(f"データなし: {symbol}")
+                logging.warning(f"No data: {symbol}")
                 return None
                 
-            # DataFrameに変換
+            # Convert to DataFrame
             df = pd.DataFrame(price_data)
-            print(f"取得データ件数: {len(df)}")  # デバッグログ追加
+            print(f"Number of records retrieved: {len(df)}")  # Debug log
             
-            # FMPの日付フォーマットに対応
+            # Handle FMP date format
             df['date'] = pd.to_datetime(df['date'])
             df = df.set_index('date').sort_index()
             
-            # 重複データの削除
+            # Remove duplicate data
             df = df[~df.index.duplicated(keep='first')]
             
-            # FMPのカラム名を標準形式に変換
+            # Convert FMP column names to standard format
             df.rename(columns={
                 'adjClose': 'Close',
                 'open': 'Open',
@@ -203,42 +206,42 @@ class TradeReport:
                 'volume': 'Volume'
             }, inplace=True)
             
-            # 21日移動平均を追加
+            # Add 21-day moving average
             df['MA21'] = df['Close'].rolling(window=21).mean()
             
-            logging.info(f"成功: {symbol}")
+            logging.info(f"Success: {symbol}")
             return df
             
         except Exception as e:
-            logging.error(f"予期せぬエラー {symbol}: {str(e)}")
+            logging.error(f"Unexpected error {symbol}: {str(e)}")
             return None
 
     def determine_trade_date(self, report_date, market_timing):
-        """トレード日を決定"""
+        """Determine trade date"""
         report_date = datetime.strptime(report_date, "%Y-%m-%d")
         if market_timing == "BeforeMarket":
             return report_date.strftime("%Y-%m-%d")
         else:
-            # BeforeMarket以外はすべてAfterMarketと同じ扱い
+            # Treat all non-BeforeMarket as AfterMarket
             next_date = report_date + timedelta(days=1)
             return next_date.strftime("%Y-%m-%d")
 
     def filter_earnings_data(self, data):
-        """決算データのフィルタリング処理"""
+        """Filter earnings data"""
         if 'earnings' not in data:
-            raise KeyError("JSONデータに'earnings'キーが存在しません")
+            raise KeyError("'earnings' key not found in JSON data")
         
         total_records = len(data['earnings'])
-        print(f"\nフィルタリング処理を開始 (全{total_records}件)")
+        print(f"\nStarting filtering process (total {total_records} records)")
         
-        # 第1段階のフィルタリング
-        print("\n=== 第1段階フィルタリング ===")
-        print("条件:")
-        print("1. .US銘柄のみ")
-        print("2. サプライズ率5%以上")
-        print("3. 実績値がプラス")
+        # Stage 1 filtering
+        print("\n=== Stage 1 Filtering ===")
+        print("Conditions:")
+        print("1. .US stocks only")
+        print("2. Surprise rate >= 5%")
+        print("3. Positive actual value")
         if self.mid_small_only:
-            print("4. 時価総額が1000億ドル未満")
+            print("4. Market cap < $100 billion")
         
         first_filtered = []
         skipped_count = 0
@@ -277,17 +280,17 @@ class TradeReport:
                 skipped_count += 1
                 continue
         
-        print(f"\n第1段階フィルタリング結果:")
-        print(f"- 処理件数: {total_records}")
-        print(f"- 条件適合: {len(first_filtered)}")
-        print(f"- スキップ: {skipped_count}")
+        print(f"\nStage 1 Filtering Results:")
+        print(f"- Total processed: {total_records}")
+        print(f"- Conditions met: {len(first_filtered)}")
+        print(f"- Skipped: {skipped_count}")
         
         # 第2段階のフィルタリング
-        print("\n=== 第2段階フィルタリング ===")
+        print("\n=== Stage 2 Filtering ===")
         print("条件:")
         print("4. ギャップ率0%以上")
         print("5. 株価10ドル以上")
-        print("6. 20日平均出来高20万株以上")
+        print("6. 20-day average volume >= 200,000 shares")
         print(f"7. 過去20日間の価格変化率{self.pre_earnings_change}%以上")
         
         date_stocks = defaultdict(list)
@@ -319,7 +322,7 @@ class TradeReport:
                 )
                 
                 if stock_data is None or stock_data.empty:
-                    tqdm.write("- スキップ: 株価データなし")
+                    tqdm.write("- Skip: No price data")
                     skipped_count += 1
                     continue
 
@@ -330,13 +333,13 @@ class TradeReport:
                     price_change = ((current_close - price_20d_ago) / price_20d_ago) * 100
                     tqdm.write(f"- 過去20日間の価格変化率: {price_change:.1f}%")
                 except (KeyError, IndexError):
-                    tqdm.write("- スキップ: 20日分の価格データなし")
+                    tqdm.write("- Skip: Insufficient 20-day price data")
                     skipped_count += 1
                     continue
 
                 # 価格変化率のフィルタリング
                 if price_change < self.pre_earnings_change:
-                    tqdm.write(f"- スキップ: 価格変化率が{self.pre_earnings_change}%未満")
+                    tqdm.write(f"- Skip: Price change < {self.pre_earnings_change}%")
                     skipped_count += 1
                     continue
 
@@ -345,7 +348,7 @@ class TradeReport:
                     trade_date_data = stock_data.loc[trade_date]
                     prev_day_data = stock_data.loc[:trade_date].iloc[-2]
                 except (KeyError, IndexError):
-                    tqdm.write("- スキップ: トレード日のデータなし")
+                    tqdm.write("- Skip: No trade date data")
                     skipped_count += 1
                     continue
                 
@@ -361,15 +364,15 @@ class TradeReport:
                 
                 # フィルタリング条件のチェック
                 if gap < 0:
-                    tqdm.write("- スキップ: ギャップ率が負")
+                    tqdm.write("- Skip: Negative gap rate")
                     skipped_count += 1
                     continue
                 if trade_date_data['Open'] < 10:
-                    tqdm.write("- スキップ: 株価が10ドル未満")
+                    tqdm.write("- Skip: Stock price < $10")
                     skipped_count += 1
                     continue
                 if avg_volume < 200000:
-                    tqdm.write("- スキップ: 出来高不足")
+                    tqdm.write("- Skip: Insufficient volume")
                     skipped_count += 1
                     continue
                 
@@ -389,7 +392,7 @@ class TradeReport:
                 
                 date_stocks[trade_date].append(stock_data)
                 processed_count += 1
-                tqdm.write("→ 条件適合")
+                tqdm.write("→ Conditions met")
                 
             except Exception as e:
                 tqdm.write(f"\n銘柄の処理中にエラー ({earning.get('code', 'Unknown')}): {str(e)}")
@@ -411,10 +414,10 @@ class TradeReport:
                 print(f"- {stock['code']}: サプライズ{stock['percent']:.1f}%, "
                       f"ギャップ{stock['gap']:.1f}%")
         
-        print(f"\n第2段階フィルタリング結果:")
-        print(f"- 処理件数: {total_second_stage}")
-        print(f"- 条件適合: {processed_count}")
-        print(f"- スキップ: {skipped_count}")
+        print(f"\nStage 2 Filtering Results:")
+        print(f"- Total processed: {total_second_stage}")
+        print(f"- Conditions met: {processed_count}")
+        print(f"- Skipped: {skipped_count}")
         print(f"- 最終選択銘柄数: {len(selected_stocks)}")
         
         return selected_stocks
@@ -450,7 +453,7 @@ class TradeReport:
         # 平均保有期間
         avg_holding_period = df['holding_period'].mean()
         
-        # プロフィットファクター
+        # Profit factor
         total_profit = df[df['pnl'] > 0]['pnl'].sum()
         total_loss = abs(df[df['pnl'] <= 0]['pnl'].sum())
         profit_factor = total_profit / total_loss if total_loss != 0 else float('inf')
@@ -542,7 +545,7 @@ class TradeReport:
         }
         
         # 結果を表示
-        print("\nバックテスト結果:")
+        print("\nBacktest Results:")
         print(f"Number of trades: {metrics['number_of_trades']}")
         print(f"Ave win/loss rate: {metrics['avg_win_loss_rate']:.2f}%")
         print(f"Ave holding period: {metrics['avg_holding_period']} days")
@@ -564,9 +567,9 @@ class TradeReport:
         return metrics
 
     def generate_report(self):
-        """トレードレポートの生成"""
+        """Generate trade report"""
         if not self.trades:
-            print("トレード記録がありません")
+            print("No trade records available")
             return
         
         # メトリクスを計算
@@ -578,7 +581,7 @@ class TradeReport:
         df = df[['entry_date', 'exit_date', 'ticker', 'holding_period', 
                  'entry_price', 'exit_price', 'pnl_rate', 'pnl', 'exit_reason']]
         df.to_csv(output_file, index=False)
-        print(f"\nトレード記録を {output_file} に保存しました")
+        print(f"\nTrade records saved to {output_file}")
 
     def check_risk_management(self, current_date, current_capital):
         """
@@ -614,7 +617,7 @@ class TradeReport:
         
         # -risk_limit%を下回っている場合はFalseを返す
         if pnl_ratio < -self.risk_limit:
-            print(f"※ 損益率が-{self.risk_limit}%を下回っているため、新規トレードを制限します")
+            print(f"※ Restricting new trades as profit/loss ratio is below -{self.risk_limit}%")
             return False
         
         return True
@@ -979,6 +982,9 @@ class TradeReport:
         
         # 分析チャートを生成
         analysis_charts = self.generate_analysis_charts(df)
+        
+        # AI analysis section using OpenAI
+        ai_analysis_section = self._generate_ai_analysis(metrics)
         
         # 資産推移の計算
         df['equity'] = self.initial_capital + df['cumulative_pnl']
@@ -1364,6 +1370,8 @@ class TradeReport:
                     </div>
                 </div>
                 
+                {ai_analysis_section}
+
                 <div class="section">
                     <h2>{self.get_text('trade_history')}</h2>
                     <div class="table-container">
@@ -1708,7 +1716,7 @@ class TradeReport:
             
             print(f"\n{title}パフォーマンス:")
             for cat in stats.index:
-                if pd.isna(cat):  # NaN/NAの場合はスキップ
+                if pd.isna(cat):  # Skip if NaN/NA
                     continue
                 s = stats.loc[cat]
                 print(f"\n{cat}:")
@@ -3639,7 +3647,7 @@ class TradeReport:
             # .USを除去（存在する場合）
             base_symbol = symbol[:-3] if symbol.endswith('.US') else symbol
             
-            # FMPクライアントを使用して履歴データを取得
+            # Get historical data using FMP client
             from_date = (date - pd.Timedelta(days=5)).strftime('%Y-%m-%d')  # 5日前からのデータを取得
             to_date = date.strftime('%Y-%m-%d')
             
@@ -3727,6 +3735,67 @@ class TradeReport:
             print(f"{date}時点の資産額取得中にエラーが発生: {str(e)}")
             # エラー時はデフォルト値を返す
             return 10000.0  # デフォルト値
+
+    def _generate_ai_analysis(self, metrics: dict) -> str:
+        """Generate AI-based analysis using OpenAI GPT-4.1 (gpt-4o).
+
+        Args:
+            metrics: Performance metrics dictionary produced by ``calculate_metrics``.
+
+        Returns:
+            HTML snippet containing the analysis result (in English regardless of UI language).
+        """
+        openai_api_key = os.getenv("OPENAI_API_KEY")
+        if not openai_api_key:
+            return "<p><em>AI analysis unavailable: OPENAI_API_KEY not configured.</em></p>"
+
+        client = OpenAI(api_key=openai_api_key)
+
+        system_prompt = (
+            "You are an expert risk manager and trading coach. "
+            "Analyse the provided trading performance metrics objectively. "
+            "Identify strengths, weaknesses, risk issues, and concrete improvement advice. "
+            "Respond in a concise report style (bullet points where appropriate)."
+        )
+
+        user_content = (
+            "Here are the trading performance metrics in JSON. "
+            "Please evaluate them.\n\n" + str(metrics)
+        )
+
+        try:
+            response = client.chat.completions.create(
+                model="gpt-4.1",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_content},
+                ],
+                temperature=0.7,
+                max_tokens=500,
+            )
+
+            analysis_text = response.choices[0].message.content.strip()
+            # Ensure bullet lists are separated by a blank line so markdown converts properly
+            lines = analysis_text.splitlines()
+            fixed_lines = []
+            for idx, line in enumerate(lines):
+                stripped = line.lstrip()
+                if stripped.startswith("-") and (idx == 0 or lines[idx-1].strip() != ""):
+                    # insert blank line before standalone bullet list item
+                    fixed_lines.append("")
+                fixed_lines.append(line)
+            analysis_text = "\n".join(fixed_lines)
+
+            # Convert Markdown to HTML with lists rendered correctly
+            analysis_html_body = markdown.markdown(analysis_text, extensions=["extra", "sane_lists"])
+            analysis_html = (
+                "<div class=\"section\">"
+                "<h2>AI Insights (GPT-4.1)</h2>" + analysis_html_body + "</div>"
+            )
+            return analysis_html
+        except Exception as e:
+            logging.error(f"OpenAI analysis failed: {e}")
+            return f"<p><em>AI analysis failed: {str(e)}</em></p>"
 
 def main():
     parser = argparse.ArgumentParser(description='Alpacaトレード結果のレポート生成')
