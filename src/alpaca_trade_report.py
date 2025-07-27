@@ -1348,6 +1348,20 @@ class TradeReport:
                             {analysis_charts['ma50']}
                         </div>
                     </div>
+                    
+                    <div class="analysis-section">
+                        <h3>Market Cap Performance Analysis</h3>
+                        <div class="chart-container">
+                            {analysis_charts['market_cap']}
+                        </div>
+                    </div>
+                    
+                    <div class="analysis-section">
+                        <h3>Price Range Performance Analysis</h3>
+                        <div class="chart-container">
+                            {analysis_charts['price_range']}
+                        </div>
+                    </div>
                 </div>
                 
                 <div class="section">
@@ -1559,6 +1573,12 @@ class TradeReport:
         
         # トレンド分析
         self._analyze_pre_earnings_trend(df)
+        
+        # 時価総額分析
+        self._analyze_market_cap_performance(df)
+        
+        # 価格レンジ分析
+        self._analyze_price_range_performance(df)
         
         # ブレイクアウト分析
         self._analyze_breakout_performance(df)
@@ -2711,6 +2731,28 @@ class TradeReport:
         else:
             charts['ma50'] = ""
         
+        # Market Cap Performance分析
+        try:
+            market_cap_stats = self._analyze_market_cap_performance(df)
+            if not market_cap_stats.empty:
+                charts['market_cap'] = self._create_market_cap_performance_chart(market_cap_stats)
+            else:
+                charts['market_cap'] = ""
+        except Exception as e:
+            print(f"Market Cap分析エラー: {str(e)}")
+            charts['market_cap'] = ""
+        
+        # Price Range Performance分析
+        try:
+            price_range_stats = self._analyze_price_range_performance(df)
+            if not price_range_stats.empty:
+                charts['price_range'] = self._create_price_range_performance_chart(price_range_stats)
+            else:
+                charts['price_range'] = ""
+        except Exception as e:
+            print(f"Price Range分析エラー: {str(e)}")
+            charts['price_range'] = ""
+        
         return charts
 
     def _calculate_trend_data(self, df):
@@ -3014,6 +3056,244 @@ class TradeReport:
         except Exception as e:
             print(f"時価総額の取得エラー ({symbol}): {str(e)}")
             return None
+
+    def _categorize_market_cap(self, market_cap):
+        """時価総額をカテゴリに分類"""
+        if market_cap is None:
+            return "Unknown"
+        
+        market_cap_billions = market_cap / 1_000_000_000  # Convert to billions
+        
+        if market_cap_billions >= 200:
+            return "Mega Cap ($200B+)"
+        elif market_cap_billions >= 10:
+            return "Large Cap ($10B-$200B)"
+        elif market_cap_billions >= 2:
+            return "Mid Cap ($2B-$10B)"
+        elif market_cap_billions >= 0.3:
+            return "Small Cap ($300M-$2B)"
+        else:
+            return "Micro Cap (<$300M)"
+
+    def _categorize_price_range(self, price):
+        """株価をカテゴリに分類"""
+        if price is None:
+            return "Unknown"
+        
+        if price > 100:
+            return "High Price (>$100)"
+        elif price >= 30:
+            return "Mid Price ($30-$100)"
+        else:
+            return "Low Price (<$30)"
+
+    def _analyze_market_cap_performance(self, df):
+        """時価総額カテゴリ別のパフォーマンス分析"""
+        market_cap_performance = []
+        
+        for _, trade in df.iterrows():
+            try:
+                symbol = trade['ticker']
+                market_cap = self.get_market_cap(symbol)
+                market_cap_category = self._categorize_market_cap(market_cap)
+                
+                market_cap_performance.append({
+                    'symbol': symbol,
+                    'market_cap': market_cap,
+                    'market_cap_category': market_cap_category,
+                    'pnl_rate': trade['pnl_rate'],
+                    'pnl': trade['pnl']
+                })
+                
+            except Exception as e:
+                print(f"時価総額分析エラー ({symbol}): {str(e)}")
+                continue
+        
+        if not market_cap_performance:
+            print("時価総額データが取得できませんでした")
+            return pd.DataFrame()
+        
+        result_df = pd.DataFrame(market_cap_performance)
+        
+        # カテゴリ別の統計を計算
+        category_stats = result_df.groupby('market_cap_category').agg({
+            'pnl_rate': ['mean', 'count', lambda x: (x > 0).sum()],
+            'pnl': 'sum'
+        }).round(2)
+        
+        category_stats.columns = ['avg_return', 'trade_count', 'winning_trades', 'total_pnl']
+        category_stats['win_rate'] = (category_stats['winning_trades'] / category_stats['trade_count'] * 100).round(1)
+        
+        print("\n=== Market Cap Performance Analysis ===")
+        print(category_stats)
+        
+        return category_stats
+
+    def _analyze_price_range_performance(self, df):
+        """価格レンジ別のパフォーマンス分析"""
+        price_range_performance = []
+        
+        for _, trade in df.iterrows():
+            try:
+                symbol = trade['ticker']
+                entry_price = trade['entry_price']
+                price_category = self._categorize_price_range(entry_price)
+                
+                price_range_performance.append({
+                    'symbol': symbol,
+                    'entry_price': entry_price,
+                    'price_category': price_category,
+                    'pnl_rate': trade['pnl_rate'],
+                    'pnl': trade['pnl']
+                })
+                
+            except Exception as e:
+                print(f"価格レンジ分析エラー ({symbol}): {str(e)}")
+                continue
+        
+        if not price_range_performance:
+            print("価格レンジデータが取得できませんでした")
+            return pd.DataFrame()
+        
+        result_df = pd.DataFrame(price_range_performance)
+        
+        # カテゴリ別の統計を計算
+        category_stats = result_df.groupby('price_category').agg({
+            'pnl_rate': ['mean', 'count', lambda x: (x > 0).sum()],
+            'pnl': 'sum'
+        }).round(2)
+        
+        category_stats.columns = ['avg_return', 'trade_count', 'winning_trades', 'total_pnl']
+        category_stats['win_rate'] = (category_stats['winning_trades'] / category_stats['trade_count'] * 100).round(1)
+        
+        print("\n=== Price Range Performance Analysis ===")
+        print(category_stats)
+        
+        return category_stats
+
+    def _create_market_cap_performance_chart(self, category_stats):
+        """Market Cap Performance チャートを作成"""
+        if category_stats.empty:
+            return "<p>時価総額データがありません</p>"
+        
+        # データを準備
+        categories = category_stats.index.tolist()
+        avg_returns = category_stats['avg_return'].values
+        win_rates = category_stats['win_rate'].values
+        trade_counts = category_stats['trade_count'].values
+        
+        # 色設定
+        bar_colors = ['#22c55e' if x >= 0 else '#ef4444' for x in avg_returns]
+        
+        # 複合チャート作成
+        fig = go.Figure()
+        
+        # 棒グラフ（平均リターン）
+        fig.add_trace(go.Bar(
+            x=categories,
+            y=avg_returns,
+            name='Average Return',
+            marker_color=bar_colors,
+            text=[f'{x:.1f}% ({int(c)})' for x, c in zip(avg_returns, trade_counts)],
+            textposition='outside',
+            yaxis='y'
+        ))
+        
+        # 線グラフ（勝率）
+        fig.add_trace(go.Scatter(
+            x=categories,
+            y=win_rates,
+            mode='lines+markers',
+            name='Win Rate',
+            line=dict(color='#60a5fa', width=3),
+            marker=dict(size=8),
+            yaxis='y2'
+        ))
+        
+        # レイアウト設定
+        fig.update_layout(
+            title='Market Cap Performance Analysis',
+            xaxis_title='Market Cap Category',
+            yaxis=dict(
+                title='Return (%)',
+                side='left'
+            ),
+            yaxis2=dict(
+                title='Win Rate (%)',
+                side='right',
+                overlaying='y',
+                range=[0, 100]
+            ),
+            template='plotly_dark',
+            paper_bgcolor='#1e293b',
+            plot_bgcolor='#1e293b',
+            showlegend=True,
+            height=500
+        )
+        
+        return plot(fig, output_type='div', include_plotlyjs=False)
+
+    def _create_price_range_performance_chart(self, category_stats):
+        """Price Range Performance チャートを作成"""
+        if category_stats.empty:
+            return "<p>価格レンジデータがありません</p>"
+        
+        # データを準備
+        categories = category_stats.index.tolist()
+        avg_returns = category_stats['avg_return'].values
+        win_rates = category_stats['win_rate'].values
+        trade_counts = category_stats['trade_count'].values
+        
+        # 色設定
+        bar_colors = ['#22c55e' if x >= 0 else '#ef4444' for x in avg_returns]
+        
+        # 複合チャート作成
+        fig = go.Figure()
+        
+        # 棒グラフ（平均リターン）
+        fig.add_trace(go.Bar(
+            x=categories,
+            y=avg_returns,
+            name='Average Return',
+            marker_color=bar_colors,
+            text=[f'{x:.1f}% ({int(c)})' for x, c in zip(avg_returns, trade_counts)],
+            textposition='outside',
+            yaxis='y'
+        ))
+        
+        # 線グラフ（勝率）
+        fig.add_trace(go.Scatter(
+            x=categories,
+            y=win_rates,
+            mode='lines+markers',
+            name='Win Rate',
+            line=dict(color='#60a5fa', width=3),
+            marker=dict(size=8),
+            yaxis='y2'
+        ))
+        
+        # レイアウト設定
+        fig.update_layout(
+            title='Price Range Performance Analysis',
+            xaxis_title='Price Range Category',
+            yaxis=dict(
+                title='Return (%)',
+                side='left'
+            ),
+            yaxis2=dict(
+                title='Win Rate (%)',
+                side='right',
+                overlaying='y',
+                range=[0, 100]
+            ),
+            template='plotly_dark',
+            paper_bgcolor='#1e293b',
+            plot_bgcolor='#1e293b',
+            showlegend=True,
+            height=500
+        )
+        
+        return plot(fig, output_type='div', include_plotlyjs=False)
 
     def _analyze_volume_trend(self, df):
         """決算前の出来高トレンドを分析"""

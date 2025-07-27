@@ -118,7 +118,7 @@ class RiskManagementConfig:
     MAX_SWING_LEVERAGE: float = 1.5  # スイング許容最大レバレッジ（1.5倍）
     
     # ログファイル設定
-    PNL_LOG_FILE: str = '../pnl_log.json'
+    PNL_LOG_FILE: str = 'pnl_log.json'
     JSON_INDENT: int = 4  # JSONファイルのインデント
     
     # 取引統計
