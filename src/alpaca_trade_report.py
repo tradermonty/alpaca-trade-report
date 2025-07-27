@@ -16,7 +16,7 @@ import alpaca_trade_api as tradeapi
 from openai import OpenAI
 from fmp_data_fetcher import FMPDataFetcher
 import markdown
-import re
+
 
 # Load environment variables
 load_dotenv()
@@ -31,7 +31,7 @@ if not FMP_API_KEY:
     raise ValueError("FMP_API_KEY is not set")
 
 class TradeReport:
-    # ダークモードの色設定
+    # Dark mode color settings
     DARK_THEME = {
         'bg_color': '#1e293b',
         'plot_bg_color': '#1e293b',
@@ -246,22 +246,22 @@ class TradeReport:
         first_filtered = []
         skipped_count = 0
         
-        # tqdmを使用してプログレスバーを表示
-        for earning in tqdm(data['earnings'], desc="第1段階フィルタリング", total=total_records):
+        # Display progress bar using tqdm
+        for earning in tqdm(data['earnings'], desc="Stage 1 Filtering", total=total_records):
             try:
-                # 1. .US銘柄のチェック
+                # 1. Check for .US symbols
                 if not earning['code'].endswith('.US'):
                     skipped_count += 1
                     continue
                 
-                # ターゲットシンボルのフィルタリング
+                # Filter target symbols
                 if self.target_symbols is not None:
-                    symbol = earning['code'][:-3]  # .USを除去
+                    symbol = earning['code'][:-3]  # Remove .US
                     if symbol not in self.target_symbols:
                         skipped_count += 1
                         continue
                 
-                # 2&3. サプライズ率と実績値のチェック
+                # 2&3. Check surprise rate and actual values
                 try:
                     percent = float(earning.get('percent', 0))
                     actual = float(earning.get('actual', 0))
@@ -276,7 +276,7 @@ class TradeReport:
                 first_filtered.append(earning)
                 
             except Exception as e:
-                tqdm.write(f"\n銘柄の処理中にエラー ({earning.get('code', 'Unknown')}): {str(e)}")
+                tqdm.write(f"\nError processing symbol ({earning.get('code', 'Unknown')}): {str(e)}")
                 skipped_count += 1
                 continue
         
@@ -285,21 +285,21 @@ class TradeReport:
         print(f"- Conditions met: {len(first_filtered)}")
         print(f"- Skipped: {skipped_count}")
         
-        # 第2段階のフィルタリング
+        # Stage 2 Filtering
         print("\n=== Stage 2 Filtering ===")
-        print("条件:")
-        print("4. ギャップ率0%以上")
-        print("5. 株価10ドル以上")
+        print("Conditions:")
+        print("4. Gap ratio 0% or higher")
+        print("5. Stock price $10 or higher")
         print("6. 20-day average volume >= 200,000 shares")
-        print(f"7. 過去20日間の価格変化率{self.pre_earnings_change}%以上")
+        print(f"7. Price change rate over past 20 days {self.pre_earnings_change}% or higher")
         
         date_stocks = defaultdict(list)
         processed_count = 0
         skipped_count = 0
         total_second_stage = len(first_filtered)
         
-        # tqdmを使用してプログレスバーを表示
-        for earning in tqdm(first_filtered, desc="第2段階フィルタリング", total=total_second_stage):
+        # Display progress bar using tqdm
+        for earning in tqdm(first_filtered, desc="Stage 2 Filtering", total=total_second_stage):
             try:
                 market_timing = earning.get('before_after_market')
                 trade_date = self.determine_trade_date(
@@ -307,13 +307,13 @@ class TradeReport:
                     market_timing
                 )
                 
-                # 銘柄コードから.USを除去
+                # Remove .US from symbol code
                 symbol = earning['code'][:-3]
                 
-                tqdm.write(f"\n処理中: {symbol}")
-                tqdm.write(f"- サプライズ率: {float(earning['percent']):.1f}%")
+                tqdm.write(f"\nProcessing: {symbol}")
+                tqdm.write(f"- Surprise rate: {float(earning['percent']):.1f}%")
                 
-                # 株価データの取得期間を延長（過去20日分のデータを取得するため）
+                # Extend stock price data period (to get past 20 days of data)
                 stock_data = self.get_historical_data(
                     symbol,
                     (datetime.strptime(trade_date, "%Y-%m-%d") - timedelta(days=60)).strftime("%Y-%m-%d"),
@@ -326,24 +326,24 @@ class TradeReport:
                     skipped_count += 1
                     continue
 
-                # 過去20日間の価格変化率を計算
+                # Calculate price change rate for past 20 days
                 try:
                     current_close = stock_data.loc[:trade_date].iloc[-1]['Close']
                     price_20d_ago = stock_data.loc[:trade_date].iloc[-20]['Close']
                     price_change = ((current_close - price_20d_ago) / price_20d_ago) * 100
-                    tqdm.write(f"- 過去20日間の価格変化率: {price_change:.1f}%")
+                    tqdm.write(f"- Past 20-day price change rate: {price_change:.1f}%")
                 except (KeyError, IndexError):
                     tqdm.write("- Skip: Insufficient 20-day price data")
                     skipped_count += 1
                     continue
 
-                # 価格変化率のフィルタリング
+                # Price change rate filtering
                 if price_change < self.pre_earnings_change:
                     tqdm.write(f"- Skip: Price change < {self.pre_earnings_change}%")
                     skipped_count += 1
                     continue
 
-                # トレード日のデータを取得
+                # Get trade date data
                 try:
                     trade_date_data = stock_data.loc[trade_date]
                     prev_day_data = stock_data.loc[:trade_date].iloc[-2]
@@ -352,17 +352,17 @@ class TradeReport:
                     skipped_count += 1
                     continue
                 
-                # ギャップ率を計算
+                # Calculate gap rate
                 gap = ((trade_date_data['Open'] - prev_day_data['Close']) / prev_day_data['Close']) * 100
                 
-                # 平均出来高を計算
+                # Calculate average volume
                 avg_volume = stock_data['Volume'].tail(20).mean()
                 
-                tqdm.write(f"- ギャップ率: {gap:.1f}%")
-                tqdm.write(f"- 株価: ${trade_date_data['Open']:.2f}")
-                tqdm.write(f"- 平均出来高: {avg_volume:,.0f}")
+                tqdm.write(f"- Gap rate: {gap:.1f}%")
+                tqdm.write(f"- Stock price: ${trade_date_data['Open']:.2f}")
+                tqdm.write(f"- Average volume: {avg_volume:,.0f}")
                 
-                # フィルタリング条件のチェック
+                # Check filtering conditions
                 if gap < 0:
                     tqdm.write("- Skip: Negative gap rate")
                     skipped_count += 1
@@ -376,14 +376,14 @@ class TradeReport:
                     skipped_count += 1
                     continue
                 
-                # データを保存
+                # Save data
                 stock_data = {
                     'code': symbol,
                     'report_date': earning['report_date'],
                     'trade_date': trade_date,
-                    'price': trade_date_data['Open'],  # 'entry_price'から'price'に戻す
+                    'price': trade_date_data['Open'],  # Revert from 'entry_price' to 'price'
                     'entry_price': trade_date_data['Open'],
-                    'prev_close': prev_day_data['Close'],  # prev_closeも追加
+                    'prev_close': prev_day_data['Close'],  # Also add prev_close
                     'gap': gap,
                     'volume': trade_date_data['Volume'],
                     'avg_volume': avg_volume,
@@ -395,62 +395,62 @@ class TradeReport:
                 tqdm.write("→ Conditions met")
                 
             except Exception as e:
-                tqdm.write(f"\n銘柄の処理中にエラー ({earning.get('code', 'Unknown')}): {str(e)}")
+                tqdm.write(f"\nError processing symbol ({earning.get('code', 'Unknown')}): {str(e)}")
                 skipped_count += 1
                 continue
         
-        # 各trade_dateで上位6銘柄を選択
+        # Select top 6 stocks for each trade_date
         selected_stocks = []
-        print("\n日付ごとの選択（上位5銘柄）:")
+        print("\nDaily selections (top 5 stocks):")
         for trade_date in sorted(date_stocks.keys()):
-            # percentで降順ソート
+            # Sort by percent in descending order
             date_stocks[trade_date].sort(key=lambda x: float(x['percent']), reverse=True)
-            # 上位5銘柄を選択
+            # Select top 5 stocks
             selected = date_stocks[trade_date][:5]
             selected_stocks.extend(selected)
             
-            print(f"\n{trade_date}: {len(selected)}銘柄")
+            print(f"\n{trade_date}: {len(selected)} stocks")
             for stock in selected:
-                print(f"- {stock['code']}: サプライズ{stock['percent']:.1f}%, "
-                      f"ギャップ{stock['gap']:.1f}%")
+                print(f"- {stock['code']}: Surprise {stock['percent']:.1f}%, "
+                      f"Gap {stock['gap']:.1f}%")
         
         print(f"\nStage 2 Filtering Results:")
         print(f"- Total processed: {total_second_stage}")
         print(f"- Conditions met: {processed_count}")
         print(f"- Skipped: {skipped_count}")
-        print(f"- 最終選択銘柄数: {len(selected_stocks)}")
+        print(f"- Final selected stocks: {len(selected_stocks)}")
         
         return selected_stocks
 
 
     def calculate_metrics(self):
-        """パフォーマンス指標の計算"""
+        """Calculate performance metrics"""
         if not self.trades:
             return None
         
-        # トレードをDataFrameに変換
+        # Convert trades to DataFrame
         df = pd.DataFrame(self.trades)
         
-        # 資産推移の計算
+        # Calculate asset progression
         df['equity'] = self.initial_capital + df['pnl'].cumsum()
         
-        # 最大ドローダウンの計算（資産額ベース）
+        # Calculate maximum drawdown (asset-based)
         df['running_max'] = df['equity'].cummax()
         df['drawdown'] = (df['running_max'] - df['equity']) / df['running_max'] * 100
         max_drawdown_pct = df['drawdown'].max()
         
-        # 基本的な指標を計算
+        # Calculate basic metrics
         total_trades = len(df)
-        winning_trades = len(df[df['pnl_rate'] > 0])  # pnlではなくpnl_rateを使用
+        winning_trades = len(df[df['pnl_rate'] > 0])  # Use pnl_rate instead of pnl
         losing_trades = len(df[df['pnl_rate'] <= 0])
         
-        # 勝率
+        # Win rate
         win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0
         
-        # 平均損益率
+        # Average win/loss rate
         avg_win_loss_rate = df['pnl_rate'].mean()
         
-        # 平均保有期間
+        # Average holding period
         avg_holding_period = df['holding_period'].mean()
         
         # Profit factor
@@ -458,7 +458,7 @@ class TradeReport:
         total_loss = abs(df[df['pnl'] <= 0]['pnl'].sum())
         profit_factor = total_profit / total_loss if total_loss != 0 else float('inf')
         
-        # CAGRの計算
+        # Calculate CAGR
         start_date = pd.to_datetime(df['entry_date'].min())
         end_date = pd.to_datetime(df['exit_date'].max())
         years = (end_date - start_date).days / 365.25
@@ -469,17 +469,17 @@ class TradeReport:
         else:
             cagr = 0
         
-        # 終了理由の集計
+        # Aggregate exit reasons
         exit_reasons = df['exit_reason'].value_counts()
         
-        # 年間パフォーマンスの計算を修正
+        # Fix annual performance calculation
         df['year'] = pd.to_datetime(df['entry_date']).dt.strftime('%Y')
         df['cumulative_pnl'] = df['pnl'].cumsum()
         
-        # 年ごとの損益を計算
+        # Calculate annual profit/loss
         yearly_pnl = df.groupby('year')['pnl'].sum().reset_index()
         
-        # 各年の開始時点の資産を計算
+        # Calculate starting capital for each year
         yearly_returns = []
         current_capital = self.initial_capital
         
@@ -495,28 +495,28 @@ class TradeReport:
                 'end_capital': current_capital + year_pnl
             })
             
-            # 次年の開始資産を更新
+            # Update starting capital for next year
             current_capital += year_pnl
 
-        # Expected Value (期待値)の計算も修正
-        avg_win = df[df['pnl_rate'] > 0]['pnl'].mean() if len(df[df['pnl_rate'] > 0]) > 0 else 0  # 勝ちトレードの平均利益
-        avg_loss = df[df['pnl_rate'] < 0]['pnl'].mean() if len(df[df['pnl_rate'] < 0]) > 0 else 0  # 負けトレードの平均損失
-        win_rate_decimal = winning_trades / total_trades if total_trades > 0 else 0  # 小数での勝率
+        # Fix Expected Value calculation
+        avg_win = df[df['pnl_rate'] > 0]['pnl'].mean() if len(df[df['pnl_rate'] > 0]) > 0 else 0  # Average profit for winning trades
+        avg_loss = df[df['pnl_rate'] < 0]['pnl'].mean() if len(df[df['pnl_rate'] < 0]) > 0 else 0  # Average loss for losing trades
+        win_rate_decimal = winning_trades / total_trades if total_trades > 0 else 0  # Win rate as decimal
         expected_value = (win_rate_decimal * avg_win) + ((1 - win_rate_decimal) * avg_loss)
         
-        # Win/Loss Ratioの計算
+        # Calculate Win/Loss Ratio
         win_loss_ratio = abs(avg_win / avg_loss) if avg_loss != 0 else 0
         
-        # トレードポジションの平均値を計算
+        # Calculate average trade position value
         avg_position_size = df['entry_price'].mean() * df['shares'].mean()
         
-        # Expected Valueをポジションサイズに対する割合（パーセンテージ）として計算
+        # Calculate Expected Value as percentage relative to position size
         expected_value_pct = (expected_value / avg_position_size * 100) if avg_position_size > 0 else 0
         
-        # Calmar Ratioの計算
+        # Calculate Calmar Ratio
         calmar_ratio = abs(cagr / max_drawdown_pct) if max_drawdown_pct != 0 else float('inf')
         
-        # Pareto Ratio (80/20の法則に基づく指標)の計算
+        # Calculate Pareto Ratio (based on 80/20 rule)
         sorted_profits = df[df['pnl'] > 0]['pnl'].sort_values(ascending=False)
         top_20_percent = sorted_profits.head(int(len(sorted_profits) * 0.2))
         pareto_ratio = (top_20_percent.sum() / sorted_profits.sum() * 100) if not sorted_profits.empty else 0
@@ -544,7 +544,7 @@ class TradeReport:
             'win_loss_ratio': round(win_loss_ratio, 2)
         }
         
-        # 結果を表示
+        # Display results
         print("\nBacktest Results:")
         print(f"Number of trades: {metrics['number_of_trades']}")
         print(f"Ave win/loss rate: {metrics['avg_win_loss_rate']:.2f}%")
@@ -552,10 +552,10 @@ class TradeReport:
         print(f"Win rate: {metrics['win_rate']:.1f}%")
         print(f"Profit factor: {metrics['profit_factor']}")
         print(f"Max drawdown: {metrics['max_drawdown_pct']:.2f}%")
-        print(f"\n終了理由の内訳:")
+        print(f"\nExit reason breakdown:")
         for reason, count in metrics['exit_reasons'].items():
             print(f"- {reason}: {count}")
-        print(f"\n資産推移:")
+        print(f"\nAsset progression:")
         print(f"Initial capital: ${metrics['initial_capital']:,.2f}")
         print(f"Final capital: ${metrics['final_capital']:,.2f}")
         print(f"Total return: {metrics['total_return_pct']:.2f}%")
@@ -571,11 +571,8 @@ class TradeReport:
         if not self.trades:
             print("No trade records available")
             return
-        
-        # メトリクスを計算
-        metrics = self.calculate_metrics()
-        
-        # トレード記録をCSVファイルに出力
+                
+        # Output trade records to CSV file
         output_file = f"reports/alpaca_trade_report_{self.start_date}_{self.end_date}.csv"
         df = pd.DataFrame(self.trades)
         df = df[['entry_date', 'exit_date', 'ticker', 'holding_period', 
@@ -585,37 +582,37 @@ class TradeReport:
 
     def check_risk_management(self, current_date, current_capital):
         """
-        過去1ヶ月間の損益が総資産の-risk_limit%を下回っているかチェック
+        Check if past month P&L is below -risk_limit% of total assets
         """
         if not self.trades:
-            return True  # トレード履歴がない場合は制限なし
+            return True  # No restriction if no trade history
         
-        # 現在の日付から1ヶ月前の日付を計算
+        # Calculate date 1 month ago from current date
         one_month_ago = (datetime.strptime(current_date, "%Y-%m-%d") - 
                         timedelta(days=30)).strftime("%Y-%m-%d")
         
-        # 過去1ヶ月間の確定したトレードを抽出
+        # Extract confirmed trades from past 1 month
         recent_trades = [
             trade for trade in self.trades
             if trade['exit_date'] >= one_month_ago and trade['exit_date'] <= current_date
         ]
         
         if not recent_trades:
-            return True  # 過去1ヶ月間に確定したトレードがない場合は制限なし
+            return True  # No restriction if no confirmed trades in past 1 month
         
-        # 過去1ヶ月間の損益合計を計算
+        # Calculate total profit/loss for past 1 month
         total_pnl = sum(trade['pnl'] for trade in recent_trades)
         
-        # 損益率を計算（現在の総資産に対する割合）
+        # Calculate profit/loss rate (ratio to current total assets)
         pnl_ratio = (total_pnl / current_capital) * 100
 
-        print(f"\nリスク管理チェック ({current_date}):")
-        print(f"- 過去1ヶ月間の損益: ${total_pnl:,.2f}")
-        print(f"- 現在の総資産: ${current_capital:,.2f}")
-        print(f"- 過去1ヶ月間の損益: ${total_pnl:,.2f}")
-        print(f"- 損益率: {pnl_ratio:.2f}%")
+        print(f"\nRisk management check ({current_date}):")
+        print(f"- Past month P&L: ${total_pnl:,.2f}")
+        print(f"- Current total assets: ${current_capital:,.2f}")
+        print(f"- Past month P&L: ${total_pnl:,.2f}")
+        print(f"- P&L ratio: {pnl_ratio:.2f}%")
         
-        # -risk_limit%を下回っている場合はFalseを返す
+        # Return False if below -risk_limit%
         if pnl_ratio < -self.risk_limit:
             print(f"※ Restricting new trades as profit/loss ratio is below -{self.risk_limit}%")
             return False
@@ -623,10 +620,10 @@ class TradeReport:
         return True
 
     def get_text(self, key):
-        """言語に応じたテキストを取得"""
+        """Get text according to language"""
         texts = {
             'report_title': {
-                'ja': 'Alpacaトレードトレポート',
+                'ja': 'Alpacaトレードレポート',
                 'en': 'Alpaca Trade Report'
             },
             'total_trades': {
@@ -937,27 +934,27 @@ class TradeReport:
         return texts[key][self.language]
 
     def generate_html_report(self):
-        """HTMLレポートの生成"""
+        """Generate HTML report"""
         if not self.trades:
-            print("トレード記録がありません")
+            print("No trade records found")
             return
         
-        # メトリクスを計算
+        # Calculate metrics
         metrics = self.calculate_metrics()
         
-        # トレード記録をDataFrameに変換
+        # Convert trade records to DataFrame
         df = pd.DataFrame(self.trades)
         df['entry_date'] = pd.to_datetime(df['entry_date'])
         df = df.sort_values('entry_date')
         df['cumulative_pnl'] = df['pnl'].cumsum()
         
-        # セクター情報を取得して追加
-        print("\nセクター情報の取得中...")
+        # Get and add sector information
+        print("\nRetrieving sector information...")
         sectors = {}
         
-        for ticker in tqdm(df['ticker'].unique(), desc="セクター情報取得中"):
+        for ticker in tqdm(df['ticker'].unique(), desc="Retrieving sector info"):
             try:
-                # FMPクライアントを使用して企業プロファイルを取得
+                # Get company profile using FMP client
                 profile_data = self.fmp_client.get_company_profile(ticker)
                 if profile_data:
                     sectors[ticker] = {
@@ -970,27 +967,27 @@ class TradeReport:
                         'industry': 'Unknown'
                     }
             except Exception as e:
-                print(f"セクター情報の取得エラー ({ticker}): {str(e)}")
+                print(f"Error retrieving sector information for {ticker}: {str(e)}")
                 sectors[ticker] = {
                     'sector': 'Unknown',
                     'industry': 'Unknown'
                 }
         
-        # セクター情報をDataFrameに追加
+        # Add sector information to DataFrame
         df['sector'] = df['ticker'].map(lambda x: sectors.get(x, {}).get('sector', 'Unknown'))
         df['industry'] = df['ticker'].map(lambda x: sectors.get(x, {}).get('industry', 'Unknown'))
         
-        # 分析チャートを生成
+        # Generate analysis charts
         analysis_charts = self.generate_analysis_charts(df)
         
         # AI analysis section using OpenAI
         ai_analysis_section = self._generate_ai_analysis(metrics)
         
-        # 資産推移の計算
+        # Calculate equity curve
         df['equity'] = self.initial_capital + df['cumulative_pnl']
         df['equity_pct'] = (df['equity'] / self.initial_capital - 1) * 100
         
-        # 累積損益チャート
+        # Cumulative P&L chart
         fig_equity = go.Figure()
         fig_equity.add_trace(go.Scatter(
             x=df['entry_date'],
@@ -1011,7 +1008,7 @@ class TradeReport:
         
         equity_chart = plot(fig_equity, output_type='div', include_plotlyjs=False)
         
-        # ドローダウンチャート
+        # Drawdown chart
         df['running_max'] = df['equity'].cummax()
         df['drawdown'] = (df['running_max'] - df['equity']) / df['running_max'] * 100
         
@@ -1035,37 +1032,37 @@ class TradeReport:
         
         drawdown_chart = plot(fig_drawdown, output_type='div', include_plotlyjs=False)
         
-        # リターン分布チャート
+        # Return distribution chart
         fig_dist = go.Figure()
 
-        # プラスとマイナスのリターンを分けて別々のヒストグラムを作成
+        # Create separate histograms for positive and negative returns
         positive_returns = df[df['pnl_rate'] >= 0]['pnl_rate']
         negative_returns = df[df['pnl_rate'] < 0]['pnl_rate']
 
-        # マイナスのリターンのヒストグラム
+        # Histogram for negative returns
         fig_dist.add_trace(go.Histogram(
             x=negative_returns,
             xbins=dict(
-                start=-10,  # -10%から
-                end=0,      # 0%まで
-                size=2.5    # 2.5%ごとにビンを作成
+                start=-10,  # From -10%
+                end=0,      # Up to 0%
+                size=2.5    # Create bins every 2.5%
             ),
             name='Negative Returns',
             marker_color=TradeReport.DARK_THEME['loss_color'],
-            hovertemplate='リターン: %{x:.1f}%<br>取引数: %{y}<extra></extra>'
+            hovertemplate='Return: %{x:.1f}%<br>Number of trades: %{y}<extra></extra>'
         ))
 
-        # プラスのリターンのヒストグラム
+        # Histogram for positive returns
         fig_dist.add_trace(go.Histogram(
             x=positive_returns,
             xbins=dict(
-                start=0,    # 0%から
-                end=100,    # 100%まで
-                size=2.5    # 2.5%ごとにビンを作成
+                start=0,    # From 0%
+                end=100,    # Up to 100%
+                size=2.5    # Create bins every 2.5%
             ),
             name='Positive Returns',
             marker_color=TradeReport.DARK_THEME['profit_color'],
-            hovertemplate='リターン: %{x:.1f}%<br>取引数: %{y}<extra></extra>'
+            hovertemplate='Return: %{x:.1f}%<br>Number of trades: %{y}<extra></extra>'
         ))
 
         fig_dist.update_layout(
@@ -1077,12 +1074,12 @@ class TradeReport:
             plot_bgcolor=TradeReport.DARK_THEME['plot_bg_color'],
             bargap=0.1,
             showlegend=False,
-            barmode='overlay'  # ヒストグラムを重ねて表示
+            barmode='overlay'  # Display histograms overlaid
         )
         
         distribution_chart = plot(fig_dist, output_type='div', include_plotlyjs=False)
 
-        # 年間パフォーマンスチャート
+        # Annual performance chart
         yearly_data = pd.DataFrame(metrics['yearly_returns'])
         fig_yearly = go.Figure()
         fig_yearly.add_trace(go.Bar(
@@ -1106,7 +1103,7 @@ class TradeReport:
         
         yearly_chart = plot(fig_yearly, output_type='div', include_plotlyjs=False)
         
-        # HTMLテンプレート
+        # HTML template
         html_template = f"""
         <!DOCTYPE html>
         <html>
@@ -1382,20 +1379,20 @@ class TradeReport:
             </div>
             
             <script>
-                // テーブルソート機能
+                // Table sort functionality
                 document.querySelectorAll('.sortable-table th').forEach(th => th.addEventListener('click', (() => {{
                         const table = th.closest('table');
                         const tbody = table.querySelector('tbody');
                         const rows = Array.from(tbody.querySelectorAll('tr'));
                         const index = Array.from(th.parentNode.children).indexOf(th);
                         
-                        // 数値かどうかを判定（$や%を除去して判定）
+                        // Determine if numeric (remove $ and % for judgment)
                         const isNumeric = !isNaN(rows[0].children[index].textContent.replace(/[^0-9.-]+/g,""));
                         
-                        // ソート方向の決定（現在の状態を反転）
+                        // Determine sort direction (reverse current state)
                         const direction = th.classList.contains('asc') ? -1 : 1;
                         
-                        // ソート処理
+                        // Sort processing
                         rows.sort((a, b) => {{
                             const aValue = a.children[index].textContent.replace(/[^0-9.-]+/g,"");
                             const bValue = b.children[index].textContent.replace(/[^0-9.-]+/g,"");
@@ -1407,14 +1404,14 @@ class TradeReport:
                             }}
                         }});
                         
-                        // ソート方向インジケータの更新
+                        // Update sort direction indicator
                         th.closest('tr').querySelectorAll('th').forEach(el => {{
                             el.classList.remove('asc', 'desc');
                         }});
                         th.classList.toggle('asc', direction === 1);
                         th.classList.toggle('desc', direction === -1);
                         
-                        // テーブルの更新
+                        // Update table
                         tbody.append(...rows);
                     }})));
                 </script>
@@ -1424,29 +1421,29 @@ class TradeReport:
         </html>
         """
 
-        # HTMLファイルの保存
+        # Save HTML file
         output_file = f"reports/alpaca_trade_report_{self.start_date}_{self.end_date}.html"
         with open(output_file, 'w', encoding='utf-8') as f:
             f.write(html_template)
         
-        print(f"\nHTMLレポートを {output_file} に保存しました")
+        print(f"\nHTML report saved to {output_file}")
         
-        # ブラウザでレポートを開く
+        # Open report in browser
         webbrowser.open('file://' + os.path.realpath(output_file))
 
     def _generate_metrics_html(self, df):
-        """メトリクス表示のHTML生成"""
+        """Generate HTML for metrics display"""
         metrics = self.calculate_metrics()
         
-        # 勝率の色設定
+        # Color settings for win rate
         win_rate_class = "positive" if metrics['win_rate'] >= 50 else "negative"
-        # 総リターンの色設定
+        # Color settings for total return
         total_return_class = "positive" if metrics['total_return_pct'] >= 0 else "negative"
-        # CAGRの色設定
+        # Color settings for CAGR
         cagr_class = "positive" if metrics['cagr'] >= 0 else "negative"
-        # プロフィットファクターの色設定
+        # Color settings for profit factor
         pf_class = "positive" if metrics['profit_factor'] >= 1.0 else "negative"
-        # 期待値の色設定
+        # Color settings for expected value
         ev_class = "positive" if metrics['expected_value_pct'] >= 0 else "negative"
         
         return f"""
@@ -1501,11 +1498,11 @@ class TradeReport:
         """
 
     def _generate_trades_table_html(self):
-        """トレード履歴テーブルのHTML生成"""
+        """Generate HTML for trade history table"""
         if not self.trades:
-            return "<p>トレード記録がありません</p>"
+            return "<p>No trade records available</p>"
         
-        # トレードをDataFrameに変換
+        # Convert trades to DataFrame
         df = pd.DataFrame(self.trades)
         df = df.sort_values('entry_date', ascending=False)
         
@@ -1529,7 +1526,7 @@ class TradeReport:
         """
         
         for _, trade in df.iterrows():
-            # 損益に基づく色設定 (profit/loss クラスを使用)
+            # Color settings based on profit/loss (use profit/loss classes)
             pnl_class = "profit" if trade['pnl'] >= 0 else "loss"
             pnl_rate_class = "profit" if trade['pnl_rate'] >= 0 else "loss"
             holding_period = f"{trade['holding_period']:.0f} days"
@@ -1557,79 +1554,79 @@ class TradeReport:
         return table_html
 
     def analyze_performance(self):
-        """バックテストの詳細分析を実行"""
+        """Execute detailed backtest analysis"""
         if not self.trades:
-            print("分析するトレードデータがありません")
+            print("No trade data available for analysis")
             return
         
-        # トレードデータをDataFrameに変換
+        # Convert trade data to DataFrame
         df = pd.DataFrame(self.trades)
         df['entry_date'] = pd.to_datetime(df['entry_date'])
         df['exit_date'] = pd.to_datetime(df['exit_date'])
         
-        # 月次パフォーマンス分析
+        # Monthly performance analysis
         self._analyze_monthly_performance(df)
         
-        # セクター・業種分析
+        # Sector and industry analysis
         self._analyze_sector_performance(df)
         
-        # EPS分析を追加
+        # Add EPS analysis
         self._analyze_eps_performance(df)
         
-        # ギャップ分析
+        # Gap analysis
         self._analyze_gap_performance(df)
         
-        # トレンド分析
+        # Trend analysis
         self._analyze_pre_earnings_trend(df)
         
-        # 時価総額分析
+        # Market cap analysis
         self._analyze_market_cap_performance(df)
         
-        # 価格レンジ分析
+        # Price range analysis
         self._analyze_price_range_performance(df)
         
-        # ブレイクアウト分析
+        # Breakout analysis
         self._analyze_breakout_performance(df)
 
     def _analyze_monthly_performance(self, df):
-        """月次パフォーマンスの分析"""
-        print("\n=== 月次パフォーマンス分析 ===")
+        """Monthly performance analysis"""
+        print("\n=== Monthly performance analysis ===")
         
-        # 月と年を抽出
+        # Extract month and year
         df['year'] = df['entry_date'].dt.year
         df['month'] = df['entry_date'].dt.month
         
-        # 月次の集計
+        # Monthly summary
         monthly_stats = df.groupby(['year', 'month']).agg({
             'pnl_rate': ['mean', 'std', 'count'],
             'pnl': 'sum'
         }).round(2)
         
-        # 月ごとの統計
+        # Monthly statistics
         monthly_summary = df.groupby('month').agg({
             'pnl_rate': ['mean', 'std', 'count'],
             'pnl': 'sum'
         }).round(2)
         
-        print("\n月別平均パフォーマンス:")
+        print("\nMonthly average performance:")
         for month in range(1, 13):
             if month in monthly_summary.index:
                 stats = monthly_summary.loc[month]
-                print(f"\n{month}月:")
-                print(f"- 平均リターン: {stats[('pnl_rate', 'mean')]:.2f}%")
-                print(f"- 標準偏差: {stats[('pnl_rate', 'std')]:.2f}%")
-                print(f"- トレード数: {stats[('pnl_rate', 'count')]}")
-                print(f"- 累計損益: ${stats[('pnl', 'sum')]:,.2f}")
+                print(f"\n{month} month:")
+                print(f"- Average return: {stats[('pnl_rate', 'mean')]:.2f}%")
+                print(f"- Standard deviation: {stats[('pnl_rate', 'std')]:.2f}%")
+                print(f"- Number of trades: {stats[('pnl_rate', 'count')]}")
+                print(f"- Cumulative P&L: ${stats[('pnl', 'sum')]:,.2f}")
 
     def _analyze_sector_performance(self, df):
-        """セクター・業種別パフォーマンスの分析"""
-        print("\n=== セクター・業種別パフォーマンス分析 ===")
+        """Sector and industry performance analysis"""
+        print("\n=== Sector and industry performance analysis ===")
         
-        # FMPからセクター情報を取得
+        # Get sector information from FMP
         sectors = {}
-        for ticker in tqdm(df['ticker'].unique(), desc="セクター情報取得中"):
+        for ticker in tqdm(df['ticker'].unique(), desc="Retrieving sector info"):
             try:
-                # FMPクライアントを使用して企業プロファイルを取得
+                # Get company profile using FMP client
                 profile_data = self.fmp_client.get_company_profile(ticker)
                 if profile_data:
                     sectors[ticker] = {
@@ -1642,119 +1639,119 @@ class TradeReport:
                         'industry': 'Unknown'
                     }
             except Exception as e:
-                print(f"セクター情報の取得エラー ({ticker}): {str(e)}")
+                print(f"Sector information retrieval error ({ticker}): {str(e)}")
                 sectors[ticker] = {
                     'sector': 'Unknown',
                     'industry': 'Unknown'
                 }
         
-        # セクター情報をDataFrameに追加
+        # Add sector information to DataFrame
         df['sector'] = df['ticker'].map(lambda x: sectors.get(x, {}).get('sector', 'Unknown'))
         df['industry'] = df['ticker'].map(lambda x: sectors.get(x, {}).get('industry', 'Unknown'))
         
-        # セクター別の統計
+        # Sector-wise statistics
         sector_stats = df.groupby('sector').agg({
             'pnl_rate': ['mean', 'std', 'count'],
             'pnl': 'sum'
         }).round(2)
         
-        print("\nセクター別パフォーマンス:")
+        print("\nSector-wise performance:")
         for sector in sector_stats.index:
             stats = sector_stats.loc[sector]
             print(f"\n{sector}:")
-            print(f"- 平均リターン: {stats[('pnl_rate', 'mean')]:.2f}%")
-            print(f"- 標準偏差: {stats[('pnl_rate', 'std')]:.2f}%")
-            print(f"- トレード数: {stats[('pnl_rate', 'count')]}")
-            print(f"- 累計損益: ${stats[('pnl', 'sum')]:,.2f}")
+            print(f"- Average return: {stats[('pnl_rate', 'mean')]:.2f}%")
+            print(f"- Standard deviation: {stats[('pnl_rate', 'std')]:.2f}%")
+            print(f"- Number of trades: {stats[('pnl_rate', 'count')]}")
+            print(f"- Total P&L: ${stats[('pnl', 'sum')]:,.2f}")
 
     def _analyze_eps_performance(self, df):
-        """EPS関連のパフォーマンス分析"""
-        print("\n=== EPS分析 ===")
+        """EPS-related performance analysis"""
+        print("\n=== EPS analysis ===")
         
-        # entry_dateを確実に日付型に変換
+        # entry_date to ensure it's a date type
         df['entry_date'] = pd.to_datetime(df['entry_date'])
         
-        # EPSデータの取得
-        print("\nEPSデータの取得中...")
+        # Get EPS data
+        print("\nGetting EPS data...")
         eps_data = {}
         for ticker, group in df.groupby('ticker'):
             try:
-                # 各銘柄の最新のエントリー日を使用
+                # Use latest entry date for each ticker
                 latest_entry = group['entry_date'].max()
                 eps_info = self._get_eps_data(ticker, latest_entry)
                 if eps_info:
                     eps_data[ticker] = eps_info
                 
             except Exception as e:
-                print(f"エラー ({ticker}): {str(e)}")
+                print(f"Error ({ticker}): {str(e)}")
                 continue
         
         if not eps_data:
-            print("警告: EPSデータが取得できませんでした")
+            print("Warning: EPS data could not be retrieved")
             return df
         
-        # EPSデータをDataFrameに追加
+        # Add EPS data to DataFrame
         df['eps_surprise'] = df['ticker'].map(lambda x: eps_data.get(x, {}).get('eps_surprise'))
         df['eps_yoy_growth'] = df['ticker'].map(lambda x: eps_data.get(x, {}).get('eps_yoy_growth'))
         df['growth_acceleration'] = df['ticker'].map(lambda x: eps_data.get(x, {}).get('growth_acceleration'))
         
-        # カテゴリの作成
+        # Create categories
         df = self._categorize_eps_metrics(df)
         
-        # 各カテゴリごとの分析を実行
+        # Execute analysis for each category
         categories = [
-            ('surprise_category', 'EPSサプライズ別'),
-            ('growth_category', 'EPS成長率別'),
-            ('growth_acceleration_category', 'EPS成長率加速度別')
+            ('surprise_category', 'EPS Surprise'),
+            ('growth_category', 'EPS Growth Rate'),
+            ('growth_acceleration_category', 'EPS Growth Acceleration')
         ]
         
         for category, title in categories:
             stats = df.groupby(category).agg({
                 'pnl_rate': ['mean', 'std', 'count'],
-                'pnl': ['sum', lambda x: (x > 0).mean() * 100]  # 合計と勝率
+                'pnl': ['sum', lambda x: (x > 0).mean() * 100]  # Total and win rate
             }).round(2)
             
-            print(f"\n{title}パフォーマンス:")
+            print(f"\n{title} performance:")
             for cat in stats.index:
                 if pd.isna(cat):  # Skip if NaN/NA
                     continue
                 s = stats.loc[cat]
                 print(f"\n{cat}:")
-                print(f"- 平均リターン: {s[('pnl_rate', 'mean')]:.2f}%")
-                print(f"- 標準偏差: {s[('pnl_rate', 'std')]:.2f}%")
-                print(f"- トレード数: {s[('pnl_rate', 'count')]}")
-                print(f"- 勝率: {s[('pnl', '<lambda>')]:.1f}%")
-                print(f"- 累計損益: ${s[('pnl', 'sum')]:,.2f}")
+                print(f"- Average return: {s[('pnl_rate', 'mean')]:.2f}%")
+                print(f"- Standard deviation: {s[('pnl_rate', 'std')]:.2f}%")
+                print(f"- Number of trades: {s[('pnl_rate', 'count')]}")
+                print(f"- Win rate: {s[('pnl', '<lambda>')]:.1f}%")
+                print(f"- Total P&L: ${s[('pnl', 'sum')]:,.2f}")
         
-        # 相関分析
+        # Correlation analysis
         correlations = {
-            'EPSサプライズ': df['eps_surprise'].corr(df['pnl_rate']),
-            'EPS成長率': df['eps_yoy_growth'].corr(df['pnl_rate']),
-            '成長率加速度': df['growth_acceleration'].corr(df['pnl_rate'])
+            'EPS Surprise': df['eps_surprise'].corr(df['pnl_rate']),
+            'EPS Growth Rate': df['eps_yoy_growth'].corr(df['pnl_rate']),
+            'Growth Acceleration': df['growth_acceleration'].corr(df['pnl_rate'])
         }
         
-        print("\n=== パフォーマンスとの相関 ===")
+        print("\n=== Correlation with performance ===")
         for metric, corr in correlations.items():
-            if not pd.isna(corr):  # NaN/NAでない場合のみ表示
-                print(f"{metric}との相関係数: {corr:.3f}")
+            if not pd.isna(corr):  # Skip if NaN/NA
+                print(f"{metric} and performance: {corr:.3f}")
         
         return df
 
     def _get_eps_data(self, ticker, entry_date):
-        """FMPからEPSデータを取得（シンプル版）"""
+        """Get EPS data from FMP (simple version)"""
         try:
-            # FMPクライアントを使用してearnings surprisesデータを取得
+            # Use FMP client to get earnings surprises data
             earnings_data = self.fmp_client.get_earnings_surprises(ticker, limit=80)
             
             if not earnings_data:
-                print(f"警告: {ticker}の決算データが見つかりません")
+                print(f"Warning: {ticker} earnings data not found")
                 return None
             
-            # エントリー日を基準に日付範囲を設定（過去2年分）
+            # Set date range based on entry date (past 2 years)
             entry_dt = pd.to_datetime(entry_date)
-            from_date = entry_dt - timedelta(days=730)  # エントリー日の2年前
+            from_date = entry_dt - timedelta(days=730)  # 2 years before entry date
             
-            # 日付でフィルタリング
+            # Filter by date
             filtered_data = []
             for e in earnings_data:
                 earning_date = pd.to_datetime(e['date'])
@@ -1762,13 +1759,13 @@ class TradeReport:
                     filtered_data.append(e)
             
             if not filtered_data:
-                print(f"警告: {ticker}の期間内決算データが見つかりません")
+                print(f"Warning: {ticker} earnings data not found within the period")
                 return None
             
-            # 日付でソート（新しい順）
+            # Sort by date (newest first)
             filtered_data.sort(key=lambda x: x['date'], reverse=True)
             
-            # 四半期データの抽出（8四半期分を取得）
+            # Extract quarters data (get 8 quarters)
             quarters = []
             for e in filtered_data:
                 quarter_date = pd.to_datetime(e['date'])
@@ -1778,14 +1775,14 @@ class TradeReport:
                         'eps': float(e['actualEarningResult']) if e['actualEarningResult'] is not None else None,
                         'estimate': float(e['estimatedEarning']) if e['estimatedEarning'] is not None else None
                     })
-                if len(quarters) >= 8:  # 8四半期分取得したら終了
+                if len(quarters) >= 8:  # Stop after getting 8 quarters
                     break
             
             if len(quarters) < 8:
-                print(f"警告: 十分な四半期データがありません（{len(quarters)}四半期分）")
+                print(f"Warning: Not enough quarters data ({len(quarters)} quarters)")
                 return None
             
-            # EPSサプライズの計算（最新四半期）
+            # Calculate EPS surprise (latest quarter)
             current_quarter = quarters[0]
             eps_surprise = None
             if (current_quarter['eps'] is not None and 
@@ -1794,7 +1791,7 @@ class TradeReport:
                 eps_surprise = ((current_quarter['eps'] - current_quarter['estimate']) / 
                               abs(current_quarter['estimate'])) * 100
             
-            # YoY成長率の計算（最新四半期）
+            # Calculate YoY growth rate (latest quarter)
             current_growth = None
             if (current_quarter['eps'] is not None and 
                 quarters[4]['eps'] is not None and 
@@ -1802,7 +1799,7 @@ class TradeReport:
                 current_growth = ((current_quarter['eps'] - quarters[4]['eps']) / 
                                 abs(quarters[4]['eps'])) * 100
             
-            # 前四半期のYoY成長率
+            # Previous quarter's YoY growth rate
             prev_growth = None
             if (quarters[1]['eps'] is not None and 
                 quarters[5]['eps'] is not None and 
@@ -1810,7 +1807,7 @@ class TradeReport:
                 prev_growth = ((quarters[1]['eps'] - quarters[5]['eps']) / 
                              abs(quarters[5]['eps'])) * 100
             
-            # 成長率の加速度
+            # Growth acceleration
             growth_acceleration = None
             if current_growth is not None and prev_growth is not None:
                 growth_acceleration = current_growth - prev_growth
@@ -1823,17 +1820,17 @@ class TradeReport:
             }
             
         except Exception as e:
-            print(f"EPSデータの取得エラー ({ticker}): {str(e)}")
+            print(f"Error retrieving EPS data ({ticker}): {str(e)}")
             return None
 
     def _categorize_eps_metrics(self, df):
-        """EPSメトリクスをカテゴリに分類"""
-        # NoneをNaNに変換
+        """Categorize EPS metrics"""
+        # Convert None to NaN
         df['eps_surprise'] = pd.to_numeric(df['eps_surprise'], errors='coerce')
         df['eps_yoy_growth'] = pd.to_numeric(df['eps_yoy_growth'], errors='coerce')
         df['growth_acceleration'] = pd.to_numeric(df['growth_acceleration'], errors='coerce')
         
-        # サプライズのカテゴリ化
+        # Categorize surprise
         df['surprise_category'] = pd.cut(
             df['eps_surprise'],
             bins=[-np.inf, -20, -10, 0, 10, 20, np.inf],
@@ -1841,7 +1838,7 @@ class TradeReport:
             include_lowest=True
         )
         
-        # YoY成長率のカテゴリ化
+        # Categorize YoY growth rate
         df['growth_category'] = pd.cut(
             df['eps_yoy_growth'],
             bins=[-np.inf, -50, -25, 0, 25, 50, np.inf],
@@ -1849,7 +1846,7 @@ class TradeReport:
             include_lowest=True
         )
         
-        # 成長率の加速度をカテゴリ化
+        # Categorize growth acceleration
         df['growth_acceleration_category'] = pd.cut(
             df['growth_acceleration'],
             bins=[-np.inf, -30, -15, 0, 15, 30, np.inf],
@@ -1858,7 +1855,7 @@ class TradeReport:
             include_lowest=True
         )
         
-        # カテゴリの順序を設定
+        # Set category order
         for col, categories in [
             ('surprise_category', ['<-20%', '-20~-10%', '-10~0%', '0~10%', '10~20%', '>20%']),
             ('growth_category', ['<-50%', '-50~-25%', '-25~0%', '0~25%', '25~50%', '>50%']),
@@ -1870,43 +1867,43 @@ class TradeReport:
         return df
 
     def _analyze_gap_performance(self, df):
-        """ギャップの大きさによるパフォーマンス分析"""
-        print("\n=== ギャップサイズ別パフォーマンス分析 ===")
+        """Performance analysis by gap size"""
+        print("\n=== Performance analysis by gap size ===")
         
-        # ギャップ率でビンを作成
+        # Create bins by gap rate
         df['gap_bin'] = pd.cut(df['gap'], 
                               bins=[-np.inf, 5, 10, 15, 20, np.inf],
                               labels=['0-5%', '5-10%', '10-15%', '15-20%', '20%+'])
         
-        # ギャップサイズ別の統計
+        # Statistics by gap size
         gap_stats = df.groupby('gap_bin').agg({
             'pnl_rate': ['mean', 'std', 'count'],
             'pnl': 'sum'
         }).round(2)
         
-        # 勝率の計算
+        # Calculate win rate
         win_rates = df.groupby('gap_bin').apply(
             lambda x: (x['pnl'] > 0).mean() * 100
         ).round(2)
         
-        print("\nギャップサイズ別パフォーマンス:")
+        print("\nPerformance by gap size:")
         for gap_bin in gap_stats.index:
             stats = gap_stats.loc[gap_bin]
             print(f"\n{gap_bin}:")
-            print(f"- 平均リターン: {stats[('pnl_rate', 'mean')]:.2f}%")
-            print(f"- 標準偏差: {stats[('pnl_rate', 'std')]:.2f}%")
-            print(f"- トレード数: {stats[('pnl_rate', 'count')]}")
-            print(f"- 勝率: {win_rates[gap_bin]:.1f}%")
-            print(f"- 累計損益: ${stats[('pnl', 'sum')]:,.2f}")
+            print(f"- Average return: {stats[('pnl_rate', 'mean')]:.2f}%")
+            print(f"- Standard deviation: {stats[('pnl_rate', 'std')]:.2f}%")
+            print(f"- Number of trades: {stats[('pnl_rate', 'count')]}")
+            print(f"- Win rate: {win_rates[gap_bin]:.1f}%")
+            print(f"- Total P&L: ${stats[('pnl', 'sum')]:,.2f}")
 
     def _analyze_pre_earnings_trend(self, df):
-        """決算前のトレンド分析"""
-        print("\n=== 決算前トレンド分析 ===")
+        """Pre-earnings trend analysis"""
+        print("\n=== Pre-earnings trend analysis ===")
         
-        # 各トレードの決算前20日間のトレンドを分析
+        # Analyze trend for each trade
         trends = []
         for _, trade in df.iterrows():
-            # 決算前の株価データを取得
+            # Get pre-earnings stock data
             pre_earnings_start = (pd.to_datetime(trade['entry_date']) - 
                                 timedelta(days=30)).strftime('%Y-%m-%d')
             stock_data = self.get_historical_data(
@@ -1916,14 +1913,14 @@ class TradeReport:
             )
             
             if stock_data is not None and len(stock_data) >= 20:
-                # 21日移動平均線を計算
+                # Calculate 21-day moving average
                 stock_data['MA21'] = stock_data['Close'].rolling(window=21).mean()
                 
-                # 20日間の価格変化率を計算
+                # Calculate 20-day price change rate
                 price_change = ((stock_data['Close'].iloc[-1] - stock_data['Close'].iloc[-20]) / 
                               stock_data['Close'].iloc[-20] * 100)
                 
-                # 20日移動平均との位置関係
+                # Position relative to 20-day moving average
                 ma_position = 'above' if stock_data['Close'].iloc[-1] > stock_data['MA21'].iloc[-1] else 'below'
                 
                 trends.append({
@@ -1932,39 +1929,39 @@ class TradeReport:
                     'pre_earnings_change': price_change,
                     'ma_position': ma_position,
                     'pnl_rate': trade['pnl_rate'],
-                    'pnl': trade['pnl']  # pnlを追加
+                    'pnl': trade['pnl']  # Add pnl
                 })
         
         trend_df = pd.DataFrame(trends)
         
         if not trend_df.empty:
-            # トレンドの強さでビンを作成
+            # Create bins by trend strength
             trend_df['trend_bin'] = pd.cut(trend_df['pre_earnings_change'],
                                          bins=[-np.inf, -20, -10, 0, 10, 20, np.inf],
                                          labels=['<-20%', '-20~-10%', '-10~0%', '0~10%', '10~20%', '>20%'])
             
-            # トレンド別の統計
+            # Statistics by trend
             trend_stats = trend_df.groupby('trend_bin').agg({
                 'pnl_rate': ['mean', 'std', 'count']
             }).round(2)
             
-            print("\nトレンド別パフォーマンス:")
+            print("\nPerformance by trend:")
             for trend_bin in trend_stats.index:
                 stats = trend_stats.loc[trend_bin]
                 print(f"\n{trend_bin}:")
-                print(f"- 平均リターン: {stats[('pnl_rate', 'mean')]:.2f}%")
-                print(f"- 標準偏差: {stats[('pnl_rate', 'std')]:.2f}%")
-                print(f"- トレード数: {stats[('pnl_rate', 'count')]}")
+                print(f"- Average return: {stats[('pnl_rate', 'mean')]:.2f}%")
+                print(f"- Standard deviation: {stats[('pnl_rate', 'std')]:.2f}%")
+                print(f"- Number of trades: {stats[('pnl_rate', 'count')]}")
         
-        return trend_df  # DataFrameを返す
+        return trend_df  # Return DataFrame
 
     def _analyze_breakout_performance(self, df):
-        """ブレイクアウトパターンの分析"""
-        print("\n=== ブレイクアウトパターン分析 ===")
+        """Breakout pattern analysis"""
+        print("\n=== Breakout pattern analysis ===")
         
         breakouts = []
         for _, trade in df.iterrows():
-            # 決算前の株価データを取得
+            # Get pre-earnings stock data
             pre_earnings_start = (pd.to_datetime(trade['entry_date']) - 
                                 timedelta(days=60)).strftime('%Y-%m-%d')
             stock_data = self.get_historical_data(
@@ -1974,10 +1971,10 @@ class TradeReport:
             )
             
             if stock_data is not None and len(stock_data) >= 20:
-                # 20日高値を計算
-                high_20d = stock_data['High'].rolling(window=20).max().iloc[-2]  # 直前日までの20日高値
+                # Calculate 20-day high
+                high_20d = stock_data['High'].rolling(window=20).max().iloc[-2]  # 20-day high before the previous day
                 
-                # ブレイクアウトの判定
+                # Determine if it's a breakout
                 is_breakout = trade['entry_price'] > high_20d
                 breakout_percent = ((trade['entry_price'] - high_20d) / high_20d * 100) if is_breakout else 0
                 
@@ -1991,12 +1988,12 @@ class TradeReport:
         
         breakout_df = pd.DataFrame(breakouts)
         
-        # ブレイクアウトの有無による統計
+        # Statistics by breakout presence
         breakout_stats = breakout_df.groupby('is_breakout').agg({
             'pnl_rate': ['mean', 'std', 'count']
         }).round(2)
         
-        # ブレイクアウトの大きさによる分析
+        # Analysis by breakout size
         breakout_df['breakout_bin'] = pd.cut(breakout_df['breakout_percent'],
                                             bins=[-np.inf, 0, 2, 5, 10, np.inf],
                                             labels=['No Breakout', '0-2%', '2-5%', '5-10%', '>10%'])
@@ -2005,30 +2002,30 @@ class TradeReport:
             'pnl_rate': ['mean', 'std', 'count']
         }).round(2)
         
-        print("\nブレイクアウトパターン別パフォーマンス:")
+        print("\nPerformance by breakout pattern:")
         for breakout_bin in size_stats.index:
             stats = size_stats.loc[breakout_bin]
             print(f"\n{breakout_bin}:")
-            print(f"- 平均リターン: {stats[('pnl_rate', 'mean')]:.2f}%")
-            print(f"- 標準偏差: {stats[('pnl_rate', 'std')]:.2f}%")
-            print(f"- トレード数: {stats[('pnl_rate', 'count')]}")
+            print(f"- Average return: {stats[('pnl_rate', 'mean')]:.2f}%")
+            print(f"- Standard deviation: {stats[('pnl_rate', 'std')]:.2f}%")
+            print(f"- Number of trades: {stats[('pnl_rate', 'count')]}")
 
     def generate_analysis_charts(self, df):
-        """分析チャートの生成"""
+        """Generate analysis charts"""
         charts = {}
         
-        # EPSデータの取得と追加
-        print("\nEPSデータの取得中...")
+        # Get EPS data and add to DataFrame
+        print("\nRetrieving EPS data...")
         eps_data = {}
         
-        # 全トレードのユニークな(ticker, entry_date)の組み合わせを取得
+        # Get unique combinations of (ticker, entry_date) for all trades
         trade_keys = df[['ticker', 'entry_date']].drop_duplicates()
         total_trades = len(trade_keys)
         
-        # tqdmを使用して進捗バーを表示
+        # Use tqdm to show progress bar
         for _, row in tqdm(trade_keys.iterrows(), 
                           total=total_trades,
-                          desc="EPSデータ取得",
+                          desc="Retrieving EPS data",
                           ncols=100):
             ticker = row['ticker']
             entry_date = row['entry_date']
@@ -2039,18 +2036,18 @@ class TradeReport:
                 
                 if eps_info:
                     eps_data[trade_key] = eps_info
-                    tqdm.write(f"{ticker} ({entry_date.strftime('%Y-%m-%d')}): EPSデータ取得成功")
+                    tqdm.write(f"{ticker} ({entry_date.strftime('%Y-%m-%d')}): EPS data retrieved successfully")
                 else:
-                    tqdm.write(f"{ticker} ({entry_date.strftime('%Y-%m-%d')}): EPSデータなし")
+                    tqdm.write(f"{ticker} ({entry_date.strftime('%Y-%m-%d')}): EPS data not found")
                     
                 
             except Exception as e:
-                tqdm.write(f"{ticker} ({entry_date.strftime('%Y-%m-%d')}): エラー - {str(e)}")
+                tqdm.write(f"{ticker} ({entry_date.strftime('%Y-%m-%d')}): Error - {str(e)}")
                 continue
 
-        print(f"\nEPSデータ取得完了: {len(eps_data)}/{total_trades} トレード")
+        print(f"\nEPS data retrieval complete: {len(eps_data)}/{total_trades} trades")
         
-        # EPSデータをDataFrameに追加（trade_keyに基づいて）
+        # Add EPS data to DataFrame (based on trade_key)
         df['eps_surprise'] = df.apply(
             lambda x: eps_data.get((x['ticker'], x['entry_date'].strftime('%Y-%m-%d')), {}).get('eps_surprise'),
             axis=1
@@ -2064,51 +2061,51 @@ class TradeReport:
             axis=1
         )
 
-        # EPSメトリクスをカテゴリに分類
+        # Categorize EPS metrics
         df = self._categorize_eps_metrics(df)
         
-        # 月次パフォーマンスと勝率のヒートマップ
+        # Monthly performance and win rate heatmap
         df['year'] = df['entry_date'].dt.year
         df['month'] = df['entry_date'].dt.month
         
-        # 平均リターンの計算（observed=Trueを明示的に指定）
+        # Calculate average return (specify observed=True explicitly)
         monthly_returns = df.pivot_table(
             values='pnl_rate',
             index='year',
             columns='month',
             aggfunc='mean',
-            observed=True  # 警告を解消
+            observed=True  # Avoid warning
         ).round(2)
         
-        # 勝率の計算（observed=Trueを明示的に指定）
+        # Calculate win rate (specify observed=True explicitly)
         monthly_winrate = df.pivot_table(
             values='pnl',
             index='year',
             columns='month',
             aggfunc=lambda x: (x > 0).mean() * 100,
-            observed=True  # 警告を解消
+            observed=True  # Avoid warning
         ).round(1)
         
-        # サブプロットの作成
+        # Create subplots
         fig = go.Figure()
         
-        # 平均リターンのヒートマップ
+        # Heatmap for average return
         fig.add_trace(go.Heatmap(
             z=monthly_returns.values,
             x=monthly_returns.columns,
             y=monthly_returns.index,
             colorscale=[
-                [0.0, TradeReport.DARK_THEME['loss_color']],      # -20%以下: 濃い赤
-                [0.2, '#ff6b6b'],                                      # -20%～-10%: 薄い赤
-                [0.4, '#ffa07a'],                                      # -10%～0%: さらに薄い赤
-                [0.5, TradeReport.DARK_THEME['plot_bg_color']],   # 0%: 背景色
-                [0.6, '#98fb98'],                                      # 0%～10%: 薄い緑
-                [0.8, '#3cb371'],                                      # 10%～20%: 中程度の緑
-                [1.0, TradeReport.DARK_THEME['profit_color']]     # 20%以上: 濃い緑
+                [0.0, TradeReport.DARK_THEME['loss_color']],      # -20% or less: dark red
+                [0.2, '#ff6b6b'],                                      # -20% to -10%: light red
+                [0.4, '#ffa07a'],                                      # -10% to 0%: lighter red
+                [0.5, TradeReport.DARK_THEME['plot_bg_color']],   # 0%: background color
+                [0.6, '#98fb98'],                                      # 0% to 10%: light green
+                [0.8, '#3cb371'],                                      # 10% to 20%: medium green
+                [1.0, TradeReport.DARK_THEME['profit_color']]     # 20% or more: dark green
             ],
-            zmid=0,  # 0%を中心に色を変える
-            zmin=-20,  # -20%以下は同じ色
-            zmax=20,   # 20%以上は同じ色
+            zmid=0,  # Change color to center on 0%
+            zmin=-20,  # Same color for -20% or less
+            zmax=20,   # Same color for 20% or more
             text=monthly_returns.values.round(1),
             texttemplate='%{text}%',
             hoverongaps=False,
@@ -2117,7 +2114,7 @@ class TradeReport:
             yaxis='y'
         ))
         
-        # 勝率のヒートマップ
+        # Heatmap for win rate
         fig.add_trace(go.Heatmap(
             z=monthly_winrate.values,
             x=monthly_winrate.columns,
@@ -2135,7 +2132,7 @@ class TradeReport:
             yaxis='y2'
         ))
         
-        # レイアウトの更新
+        # Update layout
         fig.update_layout(
             title=self.get_text('monthly_performance_heatmap'),
             grid=dict(rows=2, columns=1, pattern='independent'),
@@ -2156,12 +2153,12 @@ class TradeReport:
             template='plotly_dark',
             paper_bgcolor=TradeReport.DARK_THEME['bg_color'],
             plot_bgcolor=TradeReport.DARK_THEME['plot_bg_color'],
-            height=800  # グラフの高さを調整
+            height=800  # Adjust graph height
         )
         
         charts['monthly'] = plot(fig, output_type='div', include_plotlyjs=False)
         
-        # ギャップサイズ別パフォーマンス
+        # Performance by gap size
         gap_stats = df.groupby(pd.cut(df['gap'], 
                                      bins=[-np.inf, 5, 10, 15, 20, np.inf],
                                      labels=['0-5%', '5-10%', '10-15%', '15-20%', '20%+'])
@@ -2203,7 +2200,7 @@ class TradeReport:
         
         charts['gap'] = plot(fig_gap, output_type='div', include_plotlyjs=False)
         
-        # トレンド分析のチャート
+        # Trend analysis chart
         trend_data = self._calculate_trend_data(df)
         if trend_data is not None and not trend_data.empty and 'trend_bin' in trend_data.columns:
             trend_stats = trend_data.groupby('trend_bin').agg({
@@ -2235,18 +2232,18 @@ class TradeReport:
             
             charts['trend'] = plot(fig_trend, output_type='div', include_plotlyjs=False)
         else:
-            print("トレンドデータが取得できませんでした")
+            print("Trend data not found")
             charts['trend'] = ""
         
-        # セクター別パフォーマンスチャート
+        # Sector-wise performance chart
         sector_stats = df.groupby('sector').agg({
             'pnl_rate': ['mean', 'count'],
-            'pnl': lambda x: (x > 0).mean() * 100  # 勝率を計算
+            'pnl': lambda x: (x > 0).mean() * 100  # Calculate win rate
         }).round(2)
         
         fig_sector = go.Figure()
         
-        # 平均リターンのバー
+        # Bar for average return
         fig_sector.add_trace(go.Bar(
             x=sector_stats.index,
             y=sector_stats[('pnl_rate', 'mean')],
@@ -2260,7 +2257,7 @@ class TradeReport:
             ]
         ))
         
-        # 勝率のライン
+        # Line for win rate
         fig_sector.add_trace(go.Scatter(
             x=sector_stats.index,
             y=sector_stats[('pnl', '<lambda>')],
@@ -2294,18 +2291,18 @@ class TradeReport:
         
         charts['sector'] = plot(fig_sector, output_type='div', include_plotlyjs=False)
         
-        # 業種別パフォーマンスチャート
+        # Industry-wise performance chart
         industry_stats = df.groupby('industry').agg({
             'pnl_rate': ['mean', 'count'],
             'pnl': lambda x: (x > 0).mean() * 100
         }).round(2)
         
-        # トレード数で上位15業種を選択
+        # Select top 15 industries by number of trades
         top_industries = industry_stats.nlargest(15, ('pnl_rate', 'count'))
         
         fig_industry = go.Figure()
         
-        # 平均リターンのバー
+        # Bar for average return
         fig_industry.add_trace(go.Bar(
             x=top_industries.index,
             y=top_industries[('pnl_rate', 'mean')],
@@ -2319,7 +2316,7 @@ class TradeReport:
             ]
         ))
         
-        # 勝率のライン
+        # Line for win rate
         fig_industry.add_trace(go.Scatter(
             x=top_industries.index,
             y=top_industries[('pnl', '<lambda>')],
@@ -2351,20 +2348,20 @@ class TradeReport:
             )
         )
         
-        # X軸のラベルを45度回転
+        # Rotate X-axis labels by 45 degrees
         fig_industry.update_xaxes(tickangle=45)
         
         charts['industry'] = plot(fig_industry, output_type='div', include_plotlyjs=False)
         
-        # EPSサプライズ別パフォーマンスチャート
+        # EPS surprise-wise performance chart
         surprise_stats = df.groupby('surprise_category', observed=True).agg({
             'pnl_rate': ['mean', 'count'],
-            'pnl': lambda x: (x > 0).mean() * 100  # 勝率を計算
+            'pnl': lambda x: (x > 0).mean() * 100  # Calculate win rate
         }).round(2)
         
         fig_surprise = go.Figure()
         
-        # 平均リターンのバー
+        # Bar for average return
         fig_surprise.add_trace(go.Bar(
             x=surprise_stats.index,
             y=surprise_stats[('pnl_rate', 'mean')],
@@ -2378,7 +2375,7 @@ class TradeReport:
             ]
         ))
         
-        # 勝率のライン
+        # Line for win rate
         fig_surprise.add_trace(go.Scatter(
             x=surprise_stats.index,
             y=surprise_stats[('pnl', '<lambda>')],
@@ -2412,7 +2409,7 @@ class TradeReport:
         
         charts['eps_surprise'] = plot(fig_surprise, output_type='div', include_plotlyjs=False)
         
-        # EPS成長率別パフォーマンスチャート
+        # EPS growth rate-wise performance chart
         growth_stats = df.groupby('growth_category', observed=True).agg({
             'pnl_rate': ['mean', 'count'],
             'pnl': lambda x: (x > 0).mean() * 100
@@ -2420,7 +2417,7 @@ class TradeReport:
         
         fig_growth = go.Figure()
         
-        # 平均リターンのバー
+        # Bar for average return
         fig_growth.add_trace(go.Bar(
             x=growth_stats.index,
             y=growth_stats[('pnl_rate', 'mean')],
@@ -2434,7 +2431,7 @@ class TradeReport:
             ]
         ))
         
-        # 勝率のライン
+        # Line for win rate
         fig_growth.add_trace(go.Scatter(
             x=growth_stats.index,
             y=growth_stats[('pnl', '<lambda>')],
@@ -2468,7 +2465,7 @@ class TradeReport:
         
         charts['eps_growth'] = plot(fig_growth, output_type='div', include_plotlyjs=False)
         
-        # 成長率加速度別パフォーマンスチャート
+        # Growth acceleration-wise performance chart
         acceleration_stats = df.groupby('growth_acceleration_category', observed=True).agg({
             'pnl_rate': ['mean', 'count'],
             'pnl': lambda x: (x > 0).mean() * 100
@@ -2476,7 +2473,7 @@ class TradeReport:
         
         fig_acceleration = go.Figure()
         
-        # 平均リターンのバー
+        # Bar for average return
         fig_acceleration.add_trace(go.Bar(
             x=acceleration_stats.index,
             y=acceleration_stats[('pnl_rate', 'mean')],
@@ -2490,7 +2487,7 @@ class TradeReport:
             ]
         ))
         
-        # 勝率のライン
+        # Line for win rate
         fig_acceleration.add_trace(go.Scatter(
             x=acceleration_stats.index,
             y=acceleration_stats[('pnl', '<lambda>')],
@@ -2522,12 +2519,12 @@ class TradeReport:
             )
         )
         
-        # X軸のラベルを45度回転（加速度カテゴリは文字列が長いため）
+        # Rotate X-axis labels by 45 degrees (acceleration category is long)
         fig_acceleration.update_xaxes(tickangle=45)
         
         charts['eps_acceleration'] = plot(fig_acceleration, output_type='div', include_plotlyjs=False)
         
-        # 出来高トレンド分析のチャート
+        # Volume trend analysis chart
         volume_data = self._analyze_volume_trend(df)
         if volume_data is not None and not volume_data.empty:
             try:
@@ -2538,7 +2535,7 @@ class TradeReport:
                 
                 fig_volume = go.Figure()
                 
-                # 平均リターンのバー
+                # Bar for average return
                 fig_volume.add_trace(go.Bar(
                     x=volume_stats.index,
                     y=volume_stats[('pnl_rate', 'mean')],
@@ -2552,7 +2549,7 @@ class TradeReport:
                     ]
                 ))
                 
-                # 勝率のライン
+                # Line for win rate
                 fig_volume.add_trace(go.Scatter(
                     x=volume_stats.index,
                     y=volume_stats[('pnl', '<lambda>')],
@@ -2584,30 +2581,30 @@ class TradeReport:
                     )
                 )
                 
-                # X軸のラベルを45度回転（カテゴリ名が長いため）
+                # Rotate X-axis labels by 45 degrees (category names are long)
                 fig_volume.update_xaxes(tickangle=45)
                 
                 charts['volume'] = plot(fig_volume, output_type='div', include_plotlyjs=False)
             except Exception as e:
-                print(f"出来高トレンドチャート生成エラー: {str(e)}")
+                print(f"Volume trend chart generation error: {str(e)}")
                 charts['volume'] = ""
         else:
-            print("出来高トレンドデータが取得できませんでした")
+            print("Volume trend data not found")
             charts['volume'] = ""
         
-        # 移動平均線分析のチャート
+        # Moving average line analysis chart
         ma_data = self._analyze_ma_position(df)
         
-        # デバッグ情報を追加
-        print("\nMA分析結果:")
-        print(f"データ存在: {ma_data is not None}")
+        # Add debug information
+        print("\nMA analysis results:")
+        print(f"Data exists: {ma_data is not None}")
         if ma_data is not None:
-            print(f"データ件数: {len(ma_data)}")
-            print(f"カラム: {ma_data.columns.tolist()}")
+            print(f"Data count: {len(ma_data)}")
+            print(f"Columns: {ma_data.columns.tolist()}")
         
-        # データが正しく取得できたか確認
+        # Check if data is correctly retrieved
         if ma_data is not None and not ma_data.empty:
-            # MA200のチャート
+            # MA200 chart
             if 'ma200_category' in ma_data.columns:
                 try:
                     ma200_stats = ma_data.groupby('ma200_category').agg({
@@ -2615,7 +2612,7 @@ class TradeReport:
                         'pnl': lambda x: (x > 0).mean() * 100
                     }).round(2)
                     
-                    # ... チャート生成コード ...
+                    # ... chart generation code ...
                     fig_ma200 = go.Figure()
                     fig_ma200.add_trace(go.Bar(
                         x=ma200_stats.index,
@@ -2630,7 +2627,7 @@ class TradeReport:
                         ]
                     ))
                     
-                    # 勝率のライン
+                    # Line for win rate
                     fig_ma200.add_trace(go.Scatter(
                         x=ma200_stats.index,
                         y=ma200_stats[('pnl', '<lambda>')],
@@ -2664,20 +2661,20 @@ class TradeReport:
                     
                     charts['ma200'] = plot(fig_ma200, output_type='div', include_plotlyjs=False)
                 except Exception as e:
-                    print(f"MA200チャート生成エラー: {str(e)}")
-                    charts['ma200'] = ""  # エラー時は空文字列を設定
+                    print(f"MA200 chart generation error: {str(e)}")
+                    charts['ma200'] = ""  # Set empty string when error occurs
             else:
-                print("MA200カテゴリが見つかりません")
+                print("MA200 category not found")
                 charts['ma200'] = ""
         else:
-            print("MA分析データが取得できませんでした")
+            print("MA analysis data not found")
             charts['ma200'] = ""
         
-        # MA50も同様に処理
+        # Process MA50 similarly
         if ma_data is not None and not ma_data.empty:
             if 'ma50_category' in ma_data.columns:
                 try:
-                    # ... MA50のチャート生成コード ...
+                    # ... MA50 chart generation code ...
                     ma50_stats = ma_data.groupby('ma50_category').agg({
                         'pnl_rate': ['mean', 'count'],
                         'pnl': lambda x: (x > 0).mean() * 100
@@ -2697,7 +2694,7 @@ class TradeReport:
                         ]
                     ))
                     
-                    # 勝率のライン
+                    # Line for win rate
                     fig_ma50.add_trace(go.Scatter(
                         x=ma50_stats.index,
                         y=ma50_stats[('pnl', '<lambda>')],
@@ -2731,15 +2728,15 @@ class TradeReport:
                     
                     charts['ma50'] = plot(fig_ma50, output_type='div', include_plotlyjs=False)
                 except Exception as e:
-                    print(f"MA50チャート生成エラー: {str(e)}")
+                    print(f"MA50 chart generation error: {str(e)}")
                     charts['ma50'] = ""
             else:
-                print("MA50カテゴリが見つかりません")
+                print("MA50 category not found")
                 charts['ma50'] = ""
         else:
             charts['ma50'] = ""
         
-        # Market Cap Performance分析
+        # Market Cap Performance analysis
         try:
             market_cap_stats = self._analyze_market_cap_performance(df)
             if not market_cap_stats.empty:
@@ -2747,10 +2744,10 @@ class TradeReport:
             else:
                 charts['market_cap'] = ""
         except Exception as e:
-            print(f"Market Cap分析エラー: {str(e)}")
+            print(f"Market Cap analysis error: {str(e)}")
             charts['market_cap'] = ""
         
-        # Price Range Performance分析
+        # Price Range Performance analysis
         try:
             price_range_stats = self._analyze_price_range_performance(df)
             if not price_range_stats.empty:
@@ -2758,16 +2755,16 @@ class TradeReport:
             else:
                 charts['price_range'] = ""
         except Exception as e:
-            print(f"Price Range分析エラー: {str(e)}")
+            print(f"Price Range analysis error: {str(e)}")
             charts['price_range'] = ""
         
         return charts
 
     def _calculate_trend_data(self, df):
-        """決算前のトレンドデータを計算"""
+        """Calculate trend data before earnings"""
         trends = []
         for _, trade in df.iterrows():
-            # 決算前の株価データを取得
+            # Get pre-earnings stock data
             pre_earnings_start = (pd.to_datetime(trade['entry_date']) - 
                                 timedelta(days=30)).strftime('%Y-%m-%d')
             stock_data = self.get_historical_data(
@@ -2777,14 +2774,14 @@ class TradeReport:
             )
             
             if stock_data is not None and len(stock_data) >= 20:
-                # 21日移動平均線を計算
+                # Calculate 21-day moving average
                 stock_data['MA21'] = stock_data['Close'].rolling(window=21).mean()
                 
-                # 20日間の価格変化率を計算
+                # Calculate 20-day price change rate
                 price_change = ((stock_data['Close'].iloc[-1] - stock_data['Close'].iloc[-20]) / 
                               stock_data['Close'].iloc[-20] * 100)
                 
-                # 20日移動平均との位置関係
+                # Relationship between 20-day moving average and price
                 ma_position = 'above' if stock_data['Close'].iloc[-1] > stock_data['MA21'].iloc[-1] else 'below'
                 
                 trends.append({
@@ -2793,39 +2790,39 @@ class TradeReport:
                     'pre_earnings_change': price_change,
                     'ma_position': ma_position,
                     'pnl_rate': trade['pnl_rate'],
-                    'pnl': trade['pnl']  # pnlを追加
+                    'pnl': trade['pnl']  # Add pnl
                 })
         
         trend_df = pd.DataFrame(trends)
         
         if not trend_df.empty:
-            # トレンドの強さでビンを作成
+            # Create bins by trend strength
             trend_df['trend_bin'] = pd.cut(trend_df['pre_earnings_change'],
                                          bins=[-np.inf, -20, -10, 0, 10, 20, np.inf],
                                          labels=['<-20%', '-20~-10%', '-10~0%', '0~10%', '10~20%', '>20%'])
             
-            # トレンド別の統計
+            # Statistics by trend
             trend_stats = trend_df.groupby('trend_bin').agg({
                 'pnl_rate': ['mean', 'std', 'count']
             }).round(2)
             
-            print("\nトレンド別パフォーマンス:")
+            print("\nPerformance by trend:")
             for trend_bin in trend_stats.index:
                 stats = trend_stats.loc[trend_bin]
                 print(f"\n{trend_bin}:")
-                print(f"- 平均リターン: {stats[('pnl_rate', 'mean')]:.2f}%")
-                print(f"- 標準偏差: {stats[('pnl_rate', 'std')]:.2f}%")
-                print(f"- トレード数: {stats[('pnl_rate', 'count')]}")
+                print(f"- Average return: {stats[('pnl_rate', 'mean')]:.2f}%")
+                print(f"- Standard deviation: {stats[('pnl_rate', 'std')]:.2f}%")
+                print(f"- Number of trades: {stats[('pnl_rate', 'count')]}")
         
-        return trend_df  # DataFrameを返す
+        return trend_df  # Return DataFrame
 
     def _analyze_breakout_performance(self, df):
-        """ブレイクアウトパターンの分析"""
-        print("\n=== ブレイクアウトパターン分析 ===")
+        """Analysis of breakout pattern"""
+        print("\n=== Breakout pattern analysis ===")
         
         breakouts = []
         for _, trade in df.iterrows():
-            # 決算前の株価データを取得
+            # Get pre-earnings stock data
             pre_earnings_start = (pd.to_datetime(trade['entry_date']) - 
                                 timedelta(days=60)).strftime('%Y-%m-%d')
             stock_data = self.get_historical_data(
@@ -2835,10 +2832,10 @@ class TradeReport:
             )
             
             if stock_data is not None and len(stock_data) >= 20:
-                # 20日高値を計算
-                high_20d = stock_data['High'].rolling(window=20).max().iloc[-2]  # 直前日までの20日高値
+                # Calculate 20-day high
+                high_20d = stock_data['High'].rolling(window=20).max().iloc[-2]  # 20-day high before the previous day
                 
-                # ブレイクアウトの判定
+                # Determine if it's a breakout
                 is_breakout = trade['entry_price'] > high_20d
                 breakout_percent = ((trade['entry_price'] - high_20d) / high_20d * 100) if is_breakout else 0
                 
@@ -2852,12 +2849,12 @@ class TradeReport:
         
         breakout_df = pd.DataFrame(breakouts)
         
-        # ブレイクアウトの有無による統計
+        # Statistics by breakout presence
         breakout_stats = breakout_df.groupby('is_breakout').agg({
             'pnl_rate': ['mean', 'std', 'count']
         }).round(2)
         
-        # ブレイクアウトの大きさによる分析
+        # Analysis by breakout size
         breakout_df['breakout_bin'] = pd.cut(breakout_df['breakout_percent'],
                                             bins=[-np.inf, 0, 2, 5, 10, np.inf],
                                             labels=['No Breakout', '0-2%', '2-5%', '5-10%', '>10%'])
@@ -2866,35 +2863,35 @@ class TradeReport:
             'pnl_rate': ['mean', 'std', 'count']
         }).round(2)
         
-        print("\nブレイクアウトパターン別パフォーマンス:")
+        print("\nPerformance by breakout pattern:")
         for breakout_bin in size_stats.index:
             stats = size_stats.loc[breakout_bin]
             print(f"\n{breakout_bin}:")
-            print(f"- 平均リターン: {stats[('pnl_rate', 'mean')]:.2f}%")
-            print(f"- 標準偏差: {stats[('pnl_rate', 'std')]:.2f}%")
-            print(f"- トレード数: {stats[('pnl_rate', 'count')]}")
+            print(f"- Average return: {stats[('pnl_rate', 'mean')]:.2f}%")
+            print(f"- Standard deviation: {stats[('pnl_rate', 'std')]:.2f}%")
+            print(f"- Number of trades: {stats[('pnl_rate', 'count')]}")
 
     def _analyze_ma_position(self, df):
-        """移動平均線に対する株価の位置を分析"""
+        """Analysis of stock price position relative to moving average"""
         ma_positions = []
         
-        print(f"\n移動平均線分析を開始... 処理対象件数: {len(df)}")
+        print(f"\nStarting MA analysis... Number of trades: {len(df)}")
         
         for _, trade in df.iterrows():
             try:
-                print(f"\n処理中: {trade['ticker']}")
+                print(f"\nProcessing: {trade['ticker']}")
                 
-                # 決算前250日間のデータを取得(200日MAの計算のため)
+                # Get data for 250 days before earnings (for 200-day MA calculation)
                 entry_date = pd.to_datetime(trade['entry_date'])
                 pre_earnings_start = (entry_date - timedelta(days=300)).strftime('%Y-%m-%d')
                 
-                # 未来の日付の場合は現在の日付を使用
+                # If future date, use current date
                 current_date = datetime.now()
                 if entry_date > current_date:
-                    print(f"警告: 未来の日付({entry_date.strftime('%Y-%m-%d')})が指定されています。現在の日付を使用します。")
+                    print(f"Warning: Future date ({entry_date.strftime('%Y-%m-%d')}) specified. Using current date.")
                     entry_date = current_date
                 
-                print(f"データ取得期間: {pre_earnings_start} から {entry_date.strftime('%Y-%m-%d')}")
+                print(f"Data retrieval period: {pre_earnings_start} to {entry_date.strftime('%Y-%m-%d')}")
                 
                 stock_data = self.get_historical_data(
                     trade['ticker'],
@@ -2902,25 +2899,25 @@ class TradeReport:
                     entry_date.strftime('%Y-%m-%d')
                 )
                 
-                print(f"データ取得結果: {stock_data is not None}")
+                print(f"Data retrieval result: {stock_data is not None}")
                 if stock_data is not None:
-                    print(f"データ件数: {len(stock_data)}")
+                    print(f"Data count: {len(stock_data)}")
                 
                 if stock_data is not None and len(stock_data) >= 200:
-                    # 移動平均線を計算
+                    # Calculate moving averages
                     stock_data['MA200'] = stock_data['Close'].rolling(window=200).mean()
                     stock_data['MA50'] = stock_data['Close'].rolling(window=50).mean()
                     
-                    # 最新の株価と移動平均線の位置関係を計算
+                    # Calculate the relationship between the latest stock price and the moving average
                     latest_close = stock_data['Close'].iloc[-1]
                     latest_ma200 = stock_data['MA200'].iloc[-1]
                     latest_ma50 = stock_data['MA50'].iloc[-1]
                     
-                    print(f"最新の株価: ${latest_close:.2f}")  # デバッグログ追加
-                    print(f"MA200: ${latest_ma200:.2f}")  # デバッグログ追加
-                    print(f"MA50: ${latest_ma50:.2f}")  # デバッグログ追加
+                    print(f"Latest stock price: ${latest_close:.2f}")  # Debug log
+                    print(f"MA200: ${latest_ma200:.2f}")  # Debug log
+                    print(f"MA50: ${latest_ma50:.2f}")  # Debug log
                     
-                    # MA200に対する位置のカテゴリ分類
+                    # Categorize the position relative to MA200
                     ma200_diff = (latest_close - latest_ma200) / latest_ma200 * 100
                     if ma200_diff > 30:
                         ma200_category = 'Very Far Above MA200 (>30%)'
@@ -2933,7 +2930,7 @@ class TradeReport:
                     else:
                         ma200_category = 'Very Far Below MA200 (<-15%)'
                     
-                    # MA50に対する位置のカテゴリ分類
+                    # Categorize the position relative to MA50
                     ma50_diff = (latest_close - latest_ma50) / latest_ma50 * 100
                     if ma50_diff > 20:
                         ma50_category = 'Very Far Above MA50 (>20%)'
@@ -2954,23 +2951,23 @@ class TradeReport:
                         'pnl_rate': trade['pnl_rate'],
                         'pnl': trade['pnl']
                     })
-                    print(f"銘柄 {trade['ticker']} の分析完了")
+                    print(f"Analysis completed for {trade['ticker']}")
                     
                 else:
-                    print(f"十分なヒストリカルデータがありません")
+                    print(f"Not enough historical data")
                     
             except Exception as e:
-                print(f"エラー（{trade['ticker']}）: {str(e)}")
+                print(f"Error ({trade['ticker']}): {str(e)}")
                 continue
         
         result_df = pd.DataFrame(ma_positions)
-        print(f"\n分析完了: {len(result_df)}件")
+        print(f"\nAnalysis completed: {len(result_df)} trades")
         
-        # データが存在する場合のみカテゴリを設定
+        # Set categories only if data exists
         if not result_df.empty:
-            print(f"カラム: {result_df.columns.tolist()}")
+            print(f"Columns: {result_df.columns.tolist()}")
             
-            # MA200カテゴリに順序を設定
+            # Set order for MA200 category
             if 'ma200_category' in result_df.columns:
                 result_df['ma200_category'] = pd.Categorical(
                     result_df['ma200_category'],
@@ -2984,7 +2981,7 @@ class TradeReport:
                     ordered=True
                 )
             
-            # MA50カテゴリに順序を設定
+            # Set order for MA50 category
             if 'ma50_category' in result_df.columns:
                 result_df['ma50_category'] = pd.Categorical(
                     result_df['ma50_category'],
@@ -3002,7 +2999,7 @@ class TradeReport:
 
 
     def _generate_trades_table_html(self):
-        """トレード履歴テーブルのHTML生成"""
+        """Generate HTML for trade history table"""
         rows = []
         df = pd.DataFrame(self.trades).sort_values('entry_date', ascending=False)
         
@@ -3051,9 +3048,9 @@ class TradeReport:
         return table
 
     def get_market_cap(self, symbol):
-        """FMPから時価総額を取得"""
+        """Get market cap from FMP"""
         try:
-            # FMPクライアントを使用して企業プロファイルを取得
+            # Use FMP client to get company profile
             profile_data = self.fmp_client.get_company_profile(symbol)
             if profile_data:
                 market_cap = profile_data.get('mktCap')
@@ -3062,11 +3059,11 @@ class TradeReport:
             return None
             
         except Exception as e:
-            print(f"時価総額の取得エラー ({symbol}): {str(e)}")
+            print(f"Market cap retrieval error ({symbol}): {str(e)}")
             return None
 
     def _categorize_market_cap(self, market_cap):
-        """時価総額をカテゴリに分類"""
+        """Categorize market cap into categories"""
         if market_cap is None:
             return "Unknown"
         
@@ -3084,7 +3081,7 @@ class TradeReport:
             return "Micro Cap (<$300M)"
 
     def _categorize_price_range(self, price):
-        """株価をカテゴリに分類"""
+        """Categorize price into categories"""
         if price is None:
             return "Unknown"
         
@@ -3096,7 +3093,7 @@ class TradeReport:
             return "Low Price (<$30)"
 
     def _analyze_market_cap_performance(self, df):
-        """時価総額カテゴリ別のパフォーマンス分析"""
+        """Performance analysis by market cap category"""
         market_cap_performance = []
         
         for _, trade in df.iterrows():
@@ -3114,16 +3111,16 @@ class TradeReport:
                 })
                 
             except Exception as e:
-                print(f"時価総額分析エラー ({symbol}): {str(e)}")
+                print(f"Market cap analysis error ({symbol}): {str(e)}")
                 continue
         
         if not market_cap_performance:
-            print("時価総額データが取得できませんでした")
+            print("Market cap data not found")
             return pd.DataFrame()
         
         result_df = pd.DataFrame(market_cap_performance)
         
-        # カテゴリ別の統計を計算
+        # Calculate statistics by category
         category_stats = result_df.groupby('market_cap_category').agg({
             'pnl_rate': ['mean', 'count', lambda x: (x > 0).sum()],
             'pnl': 'sum'
@@ -3138,7 +3135,7 @@ class TradeReport:
         return category_stats
 
     def _analyze_price_range_performance(self, df):
-        """価格レンジ別のパフォーマンス分析"""
+        """Performance analysis by price range"""
         price_range_performance = []
         
         for _, trade in df.iterrows():
@@ -3156,16 +3153,16 @@ class TradeReport:
                 })
                 
             except Exception as e:
-                print(f"価格レンジ分析エラー ({symbol}): {str(e)}")
+                print(f"Price range analysis error ({symbol}): {str(e)}")
                 continue
         
         if not price_range_performance:
-            print("価格レンジデータが取得できませんでした")
+            print("Price range data not found")
             return pd.DataFrame()
         
         result_df = pd.DataFrame(price_range_performance)
         
-        # カテゴリ別の統計を計算
+        # Calculate statistics by category
         category_stats = result_df.groupby('price_category').agg({
             'pnl_rate': ['mean', 'count', lambda x: (x > 0).sum()],
             'pnl': 'sum'
@@ -3180,23 +3177,23 @@ class TradeReport:
         return category_stats
 
     def _create_market_cap_performance_chart(self, category_stats):
-        """Market Cap Performance チャートを作成"""
+        """Create Market Cap Performance chart"""
         if category_stats.empty:
-            return "<p>時価総額データがありません</p>"
+            return "<p>Market cap data not found</p>"
         
-        # データを準備
+        # Prepare data
         categories = category_stats.index.tolist()
         avg_returns = category_stats['avg_return'].values
         win_rates = category_stats['win_rate'].values
         trade_counts = category_stats['trade_count'].values
         
-        # 色設定
+        # Set colors
         bar_colors = ['#22c55e' if x >= 0 else '#ef4444' for x in avg_returns]
         
-        # 複合チャート作成
+        # Create composite chart
         fig = go.Figure()
         
-        # 棒グラフ（平均リターン）
+        # Bar chart (average return)
         fig.add_trace(go.Bar(
             x=categories,
             y=avg_returns,
@@ -3207,7 +3204,7 @@ class TradeReport:
             yaxis='y'
         ))
         
-        # 線グラフ（勝率）
+        # Line chart (win rate)
         fig.add_trace(go.Scatter(
             x=categories,
             y=win_rates,
@@ -3218,7 +3215,7 @@ class TradeReport:
             yaxis='y2'
         ))
         
-        # レイアウト設定
+        # Set layout
         fig.update_layout(
             title='Market Cap Performance Analysis',
             xaxis_title='Market Cap Category',
@@ -3242,23 +3239,23 @@ class TradeReport:
         return plot(fig, output_type='div', include_plotlyjs=False)
 
     def _create_price_range_performance_chart(self, category_stats):
-        """Price Range Performance チャートを作成"""
+        """Create Price Range Performance chart"""
         if category_stats.empty:
-            return "<p>価格レンジデータがありません</p>"
+            return "<p>Price range data not found</p>"
         
-        # データを準備
+        # Prepare data
         categories = category_stats.index.tolist()
         avg_returns = category_stats['avg_return'].values
         win_rates = category_stats['win_rate'].values
         trade_counts = category_stats['trade_count'].values
         
-        # 色設定
+        # Set colors
         bar_colors = ['#22c55e' if x >= 0 else '#ef4444' for x in avg_returns]
         
-        # 複合チャート作成
+        # Create composite chart
         fig = go.Figure()
         
-        # 棒グラフ（平均リターン）
+        # Bar chart (average return)
         fig.add_trace(go.Bar(
             x=categories,
             y=avg_returns,
@@ -3269,7 +3266,7 @@ class TradeReport:
             yaxis='y'
         ))
         
-        # 線グラフ（勝率）
+        # Line chart (win rate)
         fig.add_trace(go.Scatter(
             x=categories,
             y=win_rates,
@@ -3280,7 +3277,7 @@ class TradeReport:
             yaxis='y2'
         ))
         
-        # レイアウト設定
+        # Set layout
         fig.update_layout(
             title='Price Range Performance Analysis',
             xaxis_title='Price Range Category',
@@ -3304,11 +3301,11 @@ class TradeReport:
         return plot(fig, output_type='div', include_plotlyjs=False)
 
     def _analyze_volume_trend(self, df):
-        """決算前の出来高トレンドを分析"""
+        """Analyze volume trend before earnings"""
         volume_trends = []
         
         for _, trade in df.iterrows():
-            # 決算前90日間のデータを取得(60日平均と20日平均の比較のため)
+            # Get data for 90 days before earnings (for comparison of 60-day and 20-day averages)
             pre_earnings_start = (pd.to_datetime(trade['entry_date']) - 
                                 timedelta(days=90)).strftime('%Y-%m-%d')
             stock_data = self.get_historical_data(
@@ -3318,15 +3315,15 @@ class TradeReport:
             )
             
             if stock_data is not None and len(stock_data) >= 60:
-                # 直近20日と過去60日の平均出来高を計算
+                # Calculate recent 20-day and past 60-day average volume
                 recent_volume = stock_data['Volume'].tail(20).mean()
                 historical_volume = stock_data['Volume'].tail(60).mean()
                 
-                # 出来高変化率を計算
+                # Calculate volume change rate
                 volume_change = ((recent_volume - historical_volume) / 
                                historical_volume * 100)
                 
-                # 変化率に基づいてカテゴリ分類（5段階）
+                # Categorize by volume change rate (5 levels)
                 if volume_change >= 100:
                     volume_category = 'Very Large Increase (>100%)'
                 elif volume_change >= 50:
@@ -3344,74 +3341,74 @@ class TradeReport:
                     'volume_change': volume_change,
                     'volume_category': volume_category,
                     'pnl_rate': trade['pnl_rate'],
-                    'pnl': trade['pnl']  # pnlを追加
+                    'pnl': trade['pnl']  # Add pnl
                 })
         
         return pd.DataFrame(volume_trends)
 
     def gather_trade_result(self):
-        """Alpacaから実際のトレード結果を取得"""
-        print("\nAlpacaからトレード結果を取得します...")
-        print(f"期間: {self.start_date} から {self.end_date}")
+        """Retrieve actual trade results from Alpaca"""
+        print("\nRetrieving actual trade results from Alpaca...")
+        print(f"Period: {self.start_date} to {self.end_date}")
         
-        # 1. トレードデータの取得
-        print("\n1. トレード履歴の取得中...")
+        # 1. Retrieve trade data
+        print("\n1. Retrieving trade history...")
         df_trades = self.get_activities(self.start_date, self.end_date)
         
         if df_trades.empty:
-            print("指定期間内のトレードがありません")
+            print("No trades found within the specified period")
             return
         
-        print(f"取得したトレード数: {len(df_trades)}")
+        print(f"Retrieved trades: {len(df_trades)}")
         
-        # 2. 株式分割情報の取得
-        print("\n2. 株式分割情報の取得中...")
+        # 2. Retrieve corporate actions
+        print("\n2. Retrieving corporate actions...")
         df_splits = self.get_corporate_actions(
             self.start_date, 
             self.end_date, 
             df_trades['symbol'].unique().tolist()
         )
         
-        # 3. トレードデータの処理
-        print("\n3. トレードデータの処理中...")
+        # 3. Process trade data
+        print("\n3. Processing trade data...")
         self.process_trade_data(df_trades, df_splits)
         
-        print("\n4. トレード処理完了")
-        print(f"処理したトレード数: {len(self.trades)}")
+        print("\n4. Trade processing complete")
+        print(f"Processed trades: {len(self.trades)}")
         
-        # 初期資本を計算（最初のトレード時点の資産額）
+        # Calculate initial capital (equity at first trade date)
         if self.trades:
-            # トレードを日付順にソート
+            # Sort trades by date
             sorted_trades = sorted(self.trades, key=lambda x: pd.to_datetime(x['entry_date']))
             
-            # 最初のトレード日の資産額を取得
+            # Get equity at first trade date
             first_trade_date = pd.to_datetime(sorted_trades[0]['entry_date'])
             
-            # 最初のトレード日の前日の資産額を初期資本とする
+            # Use previous day's equity as initial capital
             prev_day = (first_trade_date - pd.Timedelta(days=1)).strftime('%Y-%m-%d')
             try:
                 self.initial_capital = self.get_account_equity_at_date(prev_day)
-                print(f"初期資本: ${self.initial_capital:,.2f} ({prev_day}時点)")
+                print(f"Initial capital: ${self.initial_capital:,.2f} ({prev_day})")
             except Exception as e:
-                print(f"初期資本の取得に失敗しました: {str(e)}")
-                print(f"デフォルト値を使用します: ${self.initial_capital:,.2f}")
+                print(f"Failed to retrieve initial capital: {str(e)}")
+                print(f"Using default value: ${self.initial_capital:,.2f}")
         
-        # 最終資産を記録
+        # Record final capital
         self.final_capital = self.get_account_equity()
-        print(f"最終資産: ${self.final_capital:,.2f}")
+        print(f"Final capital: ${self.final_capital:,.2f}")
 
     def get_activities(self, start_date: str, end_date: str) -> pd.DataFrame:
         """
-        Alpaca APIからトレード履歴を取得
+        Get trade history from Alpaca API
         
         Args:
-            start_date (str): 開始日 (YYYY-MM-DD)
-            end_date (str): 終了日 (YYYY-MM-DD)
+            start_date (str): Start date (YYYY-MM-DD)
+            end_date (str): End date (YYYY-MM-DD)
             
         Returns:
-            pd.DataFrame: トレード履歴のDataFrame
+            pd.DataFrame: Trade history DataFrame
         """
-        # Alpaca API クライアントの初期化
+        # Initialize Alpaca API client
         api = tradeapi.REST(
             ALPACA_API_KEY,
             ALPACA_SECRET_KEY,
@@ -3422,7 +3419,7 @@ class TradeReport:
         activities = []
         page_token = None
 
-        # ページネーションを使用して全てのトレード履歴を取得
+        # Use pagination to get all trade history
         while True:
             try:
                 response = api.get_activities(
@@ -3437,7 +3434,7 @@ class TradeReport:
                 if not response:
                     break
 
-                # 各アクティビティをディクショナリに変換
+                # Convert each activity to dictionary (activity is a list of dictionaries)
                 for activity in response:
                     activities.append({
                         'symbol': activity.symbol,
@@ -3449,21 +3446,21 @@ class TradeReport:
                         'type': activity.type
                     })
 
-                # レスポンスが100件未満なら、これ以上のページはない
+                # If response is less than 100, there are no more pages (100 is the maximum page size)
                 if len(response) < 100:
                     break
                 
-                # 次のページのトークンを設定
+                # Set next page token
                 page_token = response[-1].id
 
             except Exception as e:
-                print(f"トレード履歴の取得中にエラーが発生: {str(e)}")
+                print(f"Error occurred while retrieving trade history: {str(e)}")
                 break
 
-        # アクティビティをDataFrameに変換
+        # Convert activities to DataFrame
         df = pd.DataFrame(activities)
         
-        # 日付でソート
+        # Sort by date
         if not df.empty:
             df = df.sort_values('transaction_time').reset_index(drop=True)
         
@@ -3471,18 +3468,18 @@ class TradeReport:
 
     def get_corporate_actions(self, start_date: str, end_date: str, symbols: List[str] = None) -> pd.DataFrame:
         """
-        株式分割などの企業アクションを取得
+        Get corporate actions (e.g. stock splits)
         
         Args:
-            start_date (str): 開始日 (YYYY-MM-DD)
-            end_date (str): 終了日 (YYYY-MM-DD)
-            symbols (List[str], optional): 銘柄リスト
+            start_date (str): Start date (YYYY-MM-DD)
+            end_date (str): End date (YYYY-MM-DD)
+            symbols (List[str], optional): Stock list
             
         Returns:
-            pd.DataFrame: 企業アクション情報のDataFrame
+            pd.DataFrame: Corporate actions information DataFrame
         """
         try:
-            # APIエンドポイントの設定
+            # Set API endpoint
             base_url = ALPACA_API_URL.replace('api.', 'data.')
             url = f"{base_url}/v1/corporate-actions"
             
@@ -3492,27 +3489,27 @@ class TradeReport:
                 "accept": "application/json"
             }
             
-            # クエリパラメータの設定
+            # Set query parameters
             params = {
-                "types": "forward_split",  # 株式分割のみ取得
+                "types": "forward_split",  # Get only stock splits
                 "start": start_date,
                 "end": end_date,
                 "limit": 1000,
                 "sort": "asc"
             }
             
-            # 銘柄が指定されている場合はカンマ区切りで追加
+            # If symbols are specified, add them as comma-separated list
             if symbols:
                 params["symbols"] = ",".join(symbols)
-                print(f"\n{len(symbols)}銘柄の企業アクション情報を取得")
-                print(f"期間: {start_date} から {end_date}")
+                print(f"\nRetrieving corporate actions for {len(symbols)} stocks")
+                print(f"Period: {start_date} to {end_date}")
             
-            # APIリクエストの実行
+            # Execute API request
             response = requests.get(url, headers=headers, params=params)
             response.raise_for_status()
             data = response.json()
             
-            # レスポンスデータの処理
+            # Process response data
             corporate_actions = []
             if isinstance(data, dict) and 'corporate_actions' in data:
                 forward_splits = data['corporate_actions'].get('forward_splits', [])
@@ -3523,42 +3520,42 @@ class TradeReport:
                         'split_date': split['ex_date'],
                         'ratio': split_ratio
                     })
-                    print(f"株式分割を検出: {split['symbol']}, 日付: {split['ex_date']}, "
-                          f"比率: {split['old_rate']}:{split['new_rate']}")
+                    print(f"Detected stock split: {split['symbol']}, Date: {split['ex_date']}, "
+                          f"Ratio: {split['old_rate']}:{split['new_rate']}")
             
-            # DataFrameの作成とフォーマット
+            # Create and format DataFrame
             df = pd.DataFrame(corporate_actions)
             if not df.empty:
-                # UTCタイムゾーンとして解釈
+                # Interpret as UTC timezone
                 df['split_date'] = pd.to_datetime(df['split_date']).dt.tz_localize('UTC')
                 df = df.sort_values('split_date').reset_index(drop=True)
             
             return df
             
         except Exception as e:
-            print(f"企業アクション情報の取得中にエラーが発生: {str(e)}")
+            print(f"Error occurred while retrieving corporate actions: {str(e)}")
             if hasattr(e, 'response'):
-                print(f"レスポンスステータス: {e.response.status_code}")
-                print(f"レスポンス内容: {e.response.text}")
+                print(f"Response status: {e.response.status_code}")
+                print(f"Response content: {e.response.text}")
             
-            # エラー時は空のDataFrameを返す
+            # If error, return empty DataFrame
             return pd.DataFrame(columns=['symbol', 'split_date', 'ratio'])
 
     def process_trade_data(self, df_trades: pd.DataFrame, df_splits: pd.DataFrame):
         """
-        トレードデータを処理してFIFO方式で損益を計算
+        Process trade data and calculate P&L using FIFO method
         
         Args:
-            df_trades (pd.DataFrame): トレード履歴
-            df_splits (pd.DataFrame): 株式分割情報
+            df_trades (pd.DataFrame): Trade history
+            df_splits (pd.DataFrame): Corporate actions information
         """
         if df_trades.empty:
             return
         
-        # 1) まず時系列順にソート
+        # 1) Sort by time series
         df_trades = df_trades.sort_values(by='transaction_time').reset_index(drop=True)
 
-        # 2) 株式分割を適用
+        # 2) Apply stock splits
         for idx, row in df_splits.iterrows():
             symbol = row['symbol']
             split_time = row['split_date']
@@ -3568,7 +3565,7 @@ class TradeReport:
             df_trades.loc[mask, 'qty'] = df_trades.loc[mask, 'qty'] * ratio
             df_trades.loc[mask, 'price'] = df_trades.loc[mask, 'price'] / ratio
 
-        # 3) FIFO方式で損益を計算
+        # 3) Calculate P&L using FIFO method
         trades_summary = []
         positions = {}  # symbol -> [(qty, price, entry_time)]
 
@@ -3583,22 +3580,22 @@ class TradeReport:
                 positions[symbol] = []
 
             if side == 'buy':
-                # 買い注文の処理
+                # Process buy order
                 positions[symbol].append((qty, price, time))
                 
             elif side == 'sell' and positions[symbol]:
-                # 売り注文の処理
+                # Process sell order
                 remaining_sell = qty
                 
                 while remaining_sell > 0 and positions[symbol]:
                     buy_qty, buy_price, buy_time = positions[symbol][0]
                     sell_qty = min(remaining_sell, buy_qty)
                     
-                    # 損益の計算
+                    # Calculate P&L
                     pnl = (price - buy_price) * sell_qty
                     pnl_pct = ((price / buy_price) - 1) * 100
                     
-                    # ポジションの更新
+                    # Update position
                     if sell_qty == buy_qty:
                         positions[symbol].pop(0)
                     else:
@@ -3606,16 +3603,16 @@ class TradeReport:
                     
                     remaining_sell -= sell_qty
                     
-                    # ギャップサイズの計算
-                    # 前日の終値をFMPのAPIから取得
+                    # Calculate gap size
+                    # Get previous day's close price from FMP API
                     prev_day = time.date() - pd.Timedelta(days=1)
                     prev_close = self.get_previous_close(symbol, prev_day)
                     gap_size = ((price / prev_close) - 1) * 100 if prev_close else 0
                     
-                    # 保有期間の計算
+                    # Calculate holding period
                     holding_period = (time - buy_time).days
                     
-                    # トレード記録を追加
+                    # Add trade record
                     trade_record = {
                         'entry_date': buy_time.strftime('%Y-%m-%d'),
                         'exit_date': time.strftime('%Y-%m-%d'),
@@ -3626,7 +3623,7 @@ class TradeReport:
                         'pnl': pnl,
                         'pnl_rate': pnl_pct,
                         'holding_period': holding_period,
-                        'exit_reason': 'sell',  # 実際のトレードでは理由は不明
+                        'exit_reason': 'sell',  # Reason is unknown in actual trades
                         'gap': gap_size
                     }
                     
@@ -3634,21 +3631,21 @@ class TradeReport:
 
     def get_previous_close(self, symbol: str, date: datetime.date) -> float:
         """
-        FMPのAPIから指定された銘柄の前日終値を取得
+        Get previous day's close price from FMP API
         
         Args:
-            symbol (str): 銘柄コード（例: AAPL, BF.B, BF.B.US など）
-            date (datetime.date): 日付
+            symbol (str): Stock code (e.g. AAPL, BF.B, BF.B.US, etc.)
+            date (datetime.date): Date
             
         Returns:
-            float: 前日終値
+            float: Previous day's close price
         """
         try:
-            # .USを除去（存在する場合）
+            # Remove .US if it exists
             base_symbol = symbol[:-3] if symbol.endswith('.US') else symbol
             
             # Get historical data using FMP client
-            from_date = (date - pd.Timedelta(days=5)).strftime('%Y-%m-%d')  # 5日前からのデータを取得
+            from_date = (date - pd.Timedelta(days=5)).strftime('%Y-%m-%d')  # Get data from 5 days ago
             to_date = date.strftime('%Y-%m-%d')
             
             price_data = self.fmp_client.get_historical_price_data(
@@ -3657,26 +3654,26 @@ class TradeReport:
                 to_date=to_date
             )
             
-            # 指定日より前の最新の終値を探す
+            # Find latest close price before specified date
             if price_data and len(price_data) > 0:
                 for data_point in reversed(price_data):
                     price_date = pd.to_datetime(data_point['date']).date()
                     if price_date < date:
-                        # FMPでは調整済み終値は'adjClose'フィールド
+                        # FMP uses 'adjClose' field for adjusted close prices
                         return float(data_point.get('adjClose', data_point.get('close')))
             
             return None
             
         except Exception as e:
-            print(f"{symbol}の前日終値取得中にエラーが発生: {str(e)}")
+            print(f"Error occurred while retrieving previous close for {symbol}: {str(e)}")
             return None
 
     def get_account_equity(self) -> float:
         """
-        Alpaca APIから現在の口座資産額を取得
+        Get current account equity from Alpaca API
         
         Returns:
-            float: 口座資産額
+            float: Account equity
         """
         try:
             api = tradeapi.REST(
@@ -3688,18 +3685,18 @@ class TradeReport:
             account = api.get_account()
             return float(account.equity)
         except Exception as e:
-            print(f"口座資産額の取得中にエラーが発生: {str(e)}")
-            return self.initial_capital  # エラー時は初期資本を返す
+            print(f"Error occurred while retrieving account equity: {str(e)}")
+            return self.initial_capital  # If error, return initial capital
 
     def get_account_equity_at_date(self, date: str) -> float:
         """
-        指定日時点の口座資産額を取得（ポートフォリオ履歴APIを使用）
+        Get account equity at specified date (using portfolio history API)
         
         Args:
-            date (str): 日付 (YYYY-MM-DD)
+            date (str): Date (YYYY-MM-DD)
             
         Returns:
-            float: 指定日時点の口座資産額
+            float: Equity at specified date
         """
         try:
             api = tradeapi.REST(
@@ -3709,13 +3706,13 @@ class TradeReport:
                 api_version='v2'
             )
             
-            # 日付をdatetimeオブジェクトに変換して、その日の開始と終了を設定
+            # Convert date to datetime object and set start and end of that day
             date_obj = datetime.strptime(date, '%Y-%m-%d')
             start_date = date_obj.strftime('%Y-%m-%d')
             end_date = (date_obj + timedelta(days=1)).strftime('%Y-%m-%d')
             
-            # APIのパラメータ形式に合わせて日付を指定
-            # 公式ドキュメントに基づいて正しいパラメータを使用
+            # Set date according to API parameter format
+            # Use correct parameters based on official documentation
             portfolio_history = api.get_portfolio_history(
                 timeframe="1D",
                 date_start=start_date,
@@ -3724,17 +3721,17 @@ class TradeReport:
             )
             
             if portfolio_history and portfolio_history.equity and len(portfolio_history.equity) > 0:
-                # 最後の値を取得
+                # Get last value
                 return float(portfolio_history.equity[-1])
             else:
-                # データがない場合は現在の資産額を返す
-                print(f"警告: {date}時点の資産額データがありません。現在の資産額を使用します。")
+                # If no data, return current equity
+                print(f"Warning: No asset data at {date}. Using current equity.")
                 return self.get_account_equity()
                 
         except Exception as e:
-            print(f"{date}時点の資産額取得中にエラーが発生: {str(e)}")
-            # エラー時はデフォルト値を返す
-            return 10000.0  # デフォルト値
+            print(f"Error occurred while retrieving equity at {date}: {str(e)}")
+            # If error, return default value
+            return 10000.0  # Default value
 
     def _generate_ai_analysis(self, metrics: dict) -> str:
         """Generate AI-based analysis using OpenAI GPT-4.1 (gpt-4o).
@@ -3790,7 +3787,7 @@ class TradeReport:
             analysis_html_body = markdown.markdown(analysis_text, extensions=["extra", "sane_lists"])
             analysis_html = (
                 "<div class=\"section\">"
-                "<h2>AI Insights (GPT-4.1)</h2>" + analysis_html_body + "</div>"
+                "<h2>AI Insights</h2>" + analysis_html_body + "</div>"
             )
             return analysis_html
         except Exception as e:
@@ -3798,42 +3795,42 @@ class TradeReport:
             return f"<p><em>AI analysis failed: {str(e)}</em></p>"
 
 def main():
-    parser = argparse.ArgumentParser(description='Alpacaトレード結果のレポート生成')
-    parser.add_argument('--start_date', help='開始日 (YYYY-MM-DD)', default=None)
-    parser.add_argument('--end_date', help='終了日 (YYYY-MM-DD)', default=None)
+    parser = argparse.ArgumentParser(description='Generate Alpaca trade results report')
+    parser.add_argument('--start_date', help='Start date (YYYY-MM-DD)', default=None)
+    parser.add_argument('--end_date', help='End date (YYYY-MM-DD)', default=None)
     parser.add_argument('--language', choices=['ja', 'en'], default='en',
-                      help='レポートの言語 (デフォルト: 英語)')
+                      help='Report language (default: English)')
     
     args = parser.parse_args()
     
-    # 開始日が指定されていない場合は1ヶ月前に設定
+    # If start date is not specified, set to 1 month ago
     if not args.start_date:
         start_date = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
     else:
         start_date = args.start_date
     
-    # 終了日が指定されていない場合は現在の日付に設定
+    # If end date is not specified, set to current date
     if not args.end_date:
         end_date = datetime.now().strftime('%Y-%m-%d')
     else:
         end_date = args.end_date
 
-    # レポート生成インスタンスの作成
+    # Create report generation instance
     report = TradeReport(
         start_date=start_date,
         end_date=end_date,
         language=args.language
     )
     
-    # トレード結果の取得
+    # Get trade results
     report.gather_trade_result()
     
-    # レポートの生成
+    # Generate report
     if report.trades:
         report.generate_report()
         report.generate_html_report()
     else:
-        print("指定期間内のトレードがありません。レポートは生成されません。")
+        print("No trades found within the specified period. Report will not be generated.")
 
 if __name__ == '__main__':
     main() 
