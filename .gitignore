@@ -129,10 +129,10 @@ dmypy.json
 .pyre/
 
 # Project specific
-# Generated reports
-reports/
-*.csv
-*.html
+# Generated reports (exclude PNG files for documentation)
+reports/*.csv
+reports/*.html
+!reports/*.png
 
 # IDE settings
 .vscode/
