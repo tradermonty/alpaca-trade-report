@@ -621,17 +621,12 @@ class FMPDataFetcher:
         
         data = None
         for sym in self._symbol_variants(symbol):
-            # v3 endpoint (recommended)
+            # v3 endpoint only (profile endpoint doesn't exist in stable API)
             original_base = self.base_url
             self.base_url = self.alt_base_url
             endpoint = f'profile/{sym}'
             data = self._make_request(endpoint)
             self.base_url = original_base
-
-            # Try stable endpoint as fallback
-            if not data:
-                endpoint = f'profile/{sym}'
-                data = self._make_request(endpoint)
 
             if data:
                 logger.debug(f"Successfully fetched profile for {sym}")
@@ -773,12 +768,10 @@ class FMPDataFetcher:
             logger.debug(f"Fetching historical price data for {sym} from {from_date} to {to_date}")
 
             # Generate endpoint combinations on the fly
+            # NOTE: Only v3 API endpoints are valid for historical price data
+            # Stable API does not support these endpoints
             endpoints_to_try = [
-                # Stable API endpoints
-                ('stable', f'historical-price-full/{sym}'),
-                ('stable', f'historical-chart/1day/{sym}'),
-                ('stable', f'historical/{sym}'),
-                # API v3 endpoints
+                # API v3 endpoints only (stable API doesn't have these endpoints)
                 ('v3', f'historical-price-full/{sym}'),
                 ('v3', f'historical-chart/1day/{sym}'),
                 ('v3', f'historical-daily-prices/{sym}'),
